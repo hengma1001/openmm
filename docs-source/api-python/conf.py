@@ -2,15 +2,18 @@
 
 import sys
 import os
-import simtk.openmm.version
+import openmm.version
 
 extensions = ['sphinx.ext.mathjax', 'sphinx.ext.ifconfig', 'sphinx.ext.autosummary',
               'sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'process-docstring',
               'sphinxcontrib.lunrsearch']
 
 autosummary_generate = True
-autodoc_default_flags = ['members', 'inherited-members']
-autodoc_member_order = 'bysource'
+autodoc_default_options = {
+    'members': True,
+    'inherited-members': True,
+    'member-order': 'bysource'
+}
 
 source_suffix = '.rst'
 master_doc = 'index'
@@ -18,8 +21,8 @@ master_doc = 'index'
 project = u'OpenMM'
 copyright = u'2015, Stanford University and the Authors'
 
-version = simtk.openmm.version.short_version
-release = simtk.openmm.version.full_version
+version = openmm.version.short_version
+release = openmm.version.full_version
 
 exclude_patterns = ['_build', '_templates']
 html_static_path = ['_static']

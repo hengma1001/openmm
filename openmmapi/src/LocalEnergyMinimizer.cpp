@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2020 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -79,7 +79,7 @@ struct MinimizerData {
 static double computeForcesAndEnergy(Context& context, const vector<Vec3>& positions, lbfgsfloatval_t *g) {
     context.setPositions(positions);
     context.computeVirtualSites();
-    State state = context.getState(State::Forces | State::Energy);
+    State state = context.getState(State::Forces | State::Energy, false, context.getIntegrator().getIntegrationForceGroups());
     const vector<Vec3>& forces = state.getForces();
     const System& system = context.getSystem();
     for (int i = 0; i < forces.size(); i++) {
@@ -152,7 +152,7 @@ void LocalEnergyMinimizer::minimize(Context& context, double tolerance, int maxI
     int numParticles = system.getNumParticles();
     double constraintTol = context.getIntegrator().getConstraintTolerance();
     double workingConstraintTol = std::max(1e-4, constraintTol);
-    double k = tolerance/workingConstraintTol;
+    double k = 100/workingConstraintTol;
     lbfgsfloatval_t *x = lbfgs_malloc(numParticles*3);
     if (x == NULL)
         throw OpenMMException("LocalEnergyMinimizer: Failed to allocate memory");

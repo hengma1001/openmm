@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2012-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2012-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -46,6 +46,10 @@ OpenCLArray::OpenCLArray(OpenCLContext& context, cl::Buffer* buffer, int size, i
 OpenCLArray::~OpenCLArray() {
     if (buffer != NULL && ownsBuffer)
         delete buffer;
+}
+
+void OpenCLArray::initialize(ComputeContext& context, int size, int elementSize, const std::string& name) {
+    initialize(dynamic_cast<OpenCLContext&>(context), size, elementSize, name, CL_MEM_READ_WRITE);
 }
 
 void OpenCLArray::initialize(OpenCLContext& context, int size, int elementSize, const std::string& name, cl_int flags) {
@@ -88,11 +92,17 @@ void OpenCLArray::resize(int size) {
     initialize(*context, size, elementSize, name, flags);
 }
 
-void OpenCLArray::upload(const void* data, bool blocking) {
+ComputeContext& OpenCLArray::getContext() {
+    return *context;
+}
+
+void OpenCLArray::uploadSubArray(const void* data, int offset, int elements, bool blocking) {
     if (buffer == NULL)
         throw OpenMMException("OpenCLArray has not been initialized");
+    if (offset < 0 || offset+elements > getSize())
+        throw OpenMMException("uploadSubArray: data exceeds range of array");
     try {
-        context->getQueue().enqueueWriteBuffer(*buffer, blocking ? CL_TRUE : CL_FALSE, 0, size*elementSize, data);
+        context->getQueue().enqueueWriteBuffer(*buffer, blocking ? CL_TRUE : CL_FALSE, offset*elementSize, elements*elementSize, data);
     }
     catch (cl::Error err) {
         std::stringstream str;
@@ -114,13 +124,14 @@ void OpenCLArray::download(void* data, bool blocking) const {
     }
 }
 
-void OpenCLArray::copyTo(OpenCLArray& dest) const {
+void OpenCLArray::copyTo(ArrayInterface& dest) const {
     if (buffer == NULL)
         throw OpenMMException("OpenCLArray has not been initialized");
     if (dest.getSize() != size || dest.getElementSize() != elementSize)
         throw OpenMMException("Error copying array "+name+" to "+dest.getName()+": The destination array does not match the size of the array");
+    OpenCLArray& clDest = context->unwrap(dest);
     try {
-        context->getQueue().enqueueCopyBuffer(*buffer, dest.getDeviceBuffer(), 0, 0, size*elementSize);
+        context->getQueue().enqueueCopyBuffer(*buffer, clDest.getDeviceBuffer(), 0, 0, size*elementSize);
     }
     catch (cl::Error err) {
         std::stringstream str;
