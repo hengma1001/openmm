@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2011-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2011-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -26,6 +24,8 @@
 
 #include "CudaParallelKernels.h"
 #include "CudaKernelSources.h"
+#include "openmm/common/ContextSelector.h"
+#include "openmm/internal/timer.h"
 
 using namespace OpenMM;
 using namespace std;
@@ -38,28 +38,6 @@ if (result != CUDA_SUCCESS) { \
     throw OpenMMException(m.str());\
 }
 
-/**
- * Get the current clock time, measured in microseconds.
- */
-#ifdef _MSC_VER
-    #include <Windows.h>
-    static long long getTime() {
-        FILETIME ft;
-        GetSystemTimeAsFileTime(&ft); // 100-nanoseconds since 1-1-1601
-        ULARGE_INTEGER result;
-        result.LowPart = ft.dwLowDateTime;
-        result.HighPart = ft.dwHighDateTime;
-        return result.QuadPart/10;
-    }
-#else
-    #include <sys/time.h> 
-    static long long getTime() {
-        struct timeval tod;
-        gettimeofday(&tod, 0);
-        return 1000000*tod.tv_sec+tod.tv_usec;
-    }
-#endif
-
 class CudaParallelCalcForcesAndEnergyKernel::BeginComputationTask : public CudaContext::WorkTask {
 public:
     BeginComputationTask(ContextImpl& context, CudaContext& cu, CudaCalcForcesAndEnergyKernel& kernel,
@@ -69,7 +47,7 @@ public:
     void execute() {
         // Copy coordinates over to this device and execute the kernel.
 
-        cu.setAsCurrent();
+        ContextSelector selector(cu);
         if (cu.getContextIndex() > 0) {
             cuStreamWaitEvent(cu.getCurrentStream(), event, 0);
             if (!cu.getPlatformData().peerAccessSupported)
@@ -93,31 +71,37 @@ private:
 class CudaParallelCalcForcesAndEnergyKernel::FinishComputationTask : public CudaContext::WorkTask {
 public:
     FinishComputationTask(ContextImpl& context, CudaContext& cu, CudaCalcForcesAndEnergyKernel& kernel,
-            bool includeForce, bool includeEnergy, int groups, double& energy, long long& completionTime, long long* pinnedMemory, CudaArray& contextForces, bool& valid, int2& interactionCount) :
+            bool includeForce, bool includeEnergy, int groups, double& energy, double& completionTime, long long* pinnedMemory, CudaArray& contextForces,
+            bool& valid, int2& interactionCount, CUstream stream, CUevent event, CUevent localEvent, bool loadBalance) :
             context(context), cu(cu), kernel(kernel), includeForce(includeForce), includeEnergy(includeEnergy), groups(groups), energy(energy),
-            completionTime(completionTime), pinnedMemory(pinnedMemory), contextForces(contextForces), valid(valid), interactionCount(interactionCount) {
+            completionTime(completionTime), pinnedMemory(pinnedMemory), contextForces(contextForces), valid(valid), interactionCount(interactionCount),
+            stream(stream), event(event), localEvent(localEvent), loadBalance(loadBalance) {
     }
     void execute() {
         // Execute the kernel, then download forces.
         
+        ContextSelector selector(cu);
         energy += kernel.finishComputation(context, includeForce, includeEnergy, groups, valid);
-        if (cu.getComputeForceCount() < 200) {
+        if (loadBalance) {
             // Record timing information for load balancing.  Since this takes time, only do it at the start of the simulation.
 
             CHECK_RESULT(cuCtxSynchronize(), "Error synchronizing CUDA context");
-            completionTime = getTime();
+            completionTime = getCurrentTime();
         }
         if (includeForce) {
             if (cu.getContextIndex() > 0) {
+                cuEventRecord(localEvent, cu.getCurrentStream());
+                cuStreamWaitEvent(stream, localEvent, 0);
                 int numAtoms = cu.getPaddedNumAtoms();
                 if (cu.getPlatformData().peerAccessSupported) {
                     int numBytes = numAtoms*3*sizeof(long long);
                     int offset = (cu.getContextIndex()-1)*numBytes;
                     CudaContext& context0 = *cu.getPlatformData().contexts[0];
-                    CHECK_RESULT(cuMemcpy(contextForces.getDevicePointer()+offset, cu.getForce().getDevicePointer(), numBytes), "Error copying forces");
+                    CHECK_RESULT(cuMemcpyAsync(contextForces.getDevicePointer()+offset, cu.unwrap(cu.getLongForceBuffer()).getDevicePointer(), numBytes, stream), "Error copying forces");
+                    cuEventRecord(event, stream);
                 }
                 else
-                    cu.getForce().download(&pinnedMemory[(cu.getContextIndex()-1)*numAtoms*3]);
+                    cu.getLongForceBuffer().download(&pinnedMemory[(cu.getContextIndex()-1)*numAtoms*3]);
             }
         }
         if (cu.getNonbondedUtilities().getUsePeriodic() && (interactionCount.x > cu.getNonbondedUtilities().getInteractingTiles().getSize() ||
@@ -130,14 +114,17 @@ private:
     ContextImpl& context;
     CudaContext& cu;
     CudaCalcForcesAndEnergyKernel& kernel;
-    bool includeForce, includeEnergy;
+    bool includeForce, includeEnergy, loadBalance;
     int groups;
     double& energy;
-    long long& completionTime;
+    double& completionTime;
     long long* pinnedMemory;
     CudaArray& contextForces;
     bool& valid;
     int2& interactionCount;
+    CUstream stream;
+    CUevent event;
+    CUevent localEvent;
 };
 
 CudaParallelCalcForcesAndEnergyKernel::CudaParallelCalcForcesAndEnergyKernel(string name, const Platform& platform, CudaPlatform::PlatformData& data) :
@@ -148,40 +135,60 @@ CudaParallelCalcForcesAndEnergyKernel::CudaParallelCalcForcesAndEnergyKernel(str
 }
 
 CudaParallelCalcForcesAndEnergyKernel::~CudaParallelCalcForcesAndEnergyKernel() {
-    data.contexts[0]->setAsCurrent();
+    ContextSelector selector(*data.contexts[0]);
     if (pinnedPositionBuffer != NULL)
         cuMemFreeHost(pinnedPositionBuffer);
     if (pinnedForceBuffer != NULL)
         cuMemFreeHost(pinnedForceBuffer);
     cuEventDestroy(event);
-    cuStreamDestroy(peerCopyStream);
+    for (int i = 0; i < peerCopyEvent.size(); i++)
+        cuEventDestroy(peerCopyEvent[i]);
+    for (int i = 0; i < peerCopyEventLocal.size(); i++)
+        cuEventDestroy(peerCopyEventLocal[i]);
+    for (int i = 0; i < peerCopyStream.size(); i++)
+        cuStreamDestroy(peerCopyStream[i]);
     if (interactionCounts != NULL)
         cuMemFreeHost(interactionCounts);
 }
 
 void CudaParallelCalcForcesAndEnergyKernel::initialize(const System& system) {
     CudaContext& cu = *data.contexts[0];
-    cu.setAsCurrent();
+    ContextSelector selector(cu);
     CUmodule module = cu.createModule(CudaKernelSources::parallel);
     sumKernel = cu.getKernel(module, "sumForces");
     int numContexts = data.contexts.size();
     for (int i = 0; i < numContexts; i++)
         getKernel(i).initialize(system);
-    for (int i = 0; i < numContexts; i++)
-        contextNonbondedFractions[i] = 1/(double) numContexts;
-    CHECK_RESULT(cuEventCreate(&event, 0), "Error creating event");
-    CHECK_RESULT(cuStreamCreate(&peerCopyStream, CU_STREAM_NON_BLOCKING), "Error creating stream");
+    for (int i = 0; i < contextNonbondedFractions.size(); i++) {
+        double x0 = i/(double) contextNonbondedFractions.size();
+        double x1 = (i+1)/(double) contextNonbondedFractions.size();
+        contextNonbondedFractions[i] = x1*x1 - x0*x0;
+    }
+    CHECK_RESULT(cuEventCreate(&event, cu.getEventFlags()), "Error creating event");
+    peerCopyEvent.resize(numContexts);
+    peerCopyEventLocal.resize(numContexts);
+    peerCopyStream.resize(numContexts);
+    for (int i = 0; i < numContexts; i++) {
+        CHECK_RESULT(cuEventCreate(&peerCopyEvent[i], cu.getEventFlags()), "Error creating event");
+        CHECK_RESULT(cuStreamCreate(&peerCopyStream[i], CU_STREAM_NON_BLOCKING), "Error creating stream");
+    }
+    for (int i = 0; i < numContexts; i++) {
+        CudaContext& cuLocal = *data.contexts[i];
+        ContextSelector selectorLocal(cuLocal);
+        CHECK_RESULT(cuEventCreate(&peerCopyEventLocal[i], cu.getEventFlags()), "Error creating event");
+    }
     CHECK_RESULT(cuMemHostAlloc((void**) &interactionCounts, numContexts*sizeof(int2), 0), "Error creating interaction counts buffer");
 }
 
 void CudaParallelCalcForcesAndEnergyKernel::beginComputation(ContextImpl& context, bool includeForce, bool includeEnergy, int groups) {
     CudaContext& cu = *data.contexts[0];
-    cu.setAsCurrent();
+    ContextSelector selector(cu);
     if (!contextForces.isInitialized()) {
         contextForces.initialize<long long>(cu, 3*(data.contexts.size()-1)*cu.getPaddedNumAtoms(), "contextForces");
         CHECK_RESULT(cuMemHostAlloc((void**) &pinnedForceBuffer, 3*(data.contexts.size()-1)*cu.getPaddedNumAtoms()*sizeof(long long), CU_MEMHOSTALLOC_PORTABLE), "Error allocating pinned memory");
         CHECK_RESULT(cuMemHostAlloc(&pinnedPositionBuffer, cu.getPaddedNumAtoms()*(cu.getUseDoublePrecision() ? sizeof(double4) : sizeof(float4)), CU_MEMHOSTALLOC_PORTABLE), "Error allocating pinned memory");
     }
+    loadBalance = (cu.getComputeForceCount() < 200 || cu.getComputeForceCount()%30 == 0);
 
     // Copy coordinates over to each device and execute the kernel.
     
@@ -192,44 +199,52 @@ void CudaParallelCalcForcesAndEnergyKernel::beginComputation(ContextImpl& contex
     else {
         int numBytes = cu.getPosq().getSize()*cu.getPosq().getElementSize();
         cuEventRecord(event, cu.getCurrentStream());
-        cuStreamWaitEvent(peerCopyStream, event, 0);
-        for (int i = 1; i < (int) data.contexts.size(); i++)
-            CHECK_RESULT(cuMemcpyAsync(data.contexts[i]->getPosq().getDevicePointer(), cu.getPosq().getDevicePointer(), numBytes, peerCopyStream), "Error copying positions");
-        cuEventRecord(event, peerCopyStream);
+        for (int i = 1; i < (int) data.contexts.size(); i++) {
+            cuStreamWaitEvent(peerCopyStream[i], event, 0);
+            CHECK_RESULT(cuMemcpyAsync(cu.unwrap(data.contexts[i]->getPosq()).getDevicePointer(), cu.unwrap(cu.getPosq()).getDevicePointer(), numBytes, peerCopyStream[i]), "Error copying positions");
+            cuEventRecord(peerCopyEvent[i], peerCopyStream[i]);
+        }
     }
     for (int i = 0; i < (int) data.contexts.size(); i++) {
         data.contextEnergy[i] = 0.0;
         CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new BeginComputationTask(context, cu, getKernel(i), includeForce, includeEnergy, groups, pinnedPositionBuffer, event, interactionCounts[i]));
+        ComputeContext::WorkThread& thread = cu.getWorkThread();
+        CUevent waitEvent = (cu.getPlatformData().peerAccessSupported ? peerCopyEvent[i] : event);
+        thread.addTask(new BeginComputationTask(context, cu, getKernel(i), includeForce, includeEnergy, groups, pinnedPositionBuffer, waitEvent, interactionCounts[i]));
     }
+    data.syncContexts();
 }
 
 double CudaParallelCalcForcesAndEnergyKernel::finishComputation(ContextImpl& context, bool includeForce, bool includeEnergy, int groups, bool& valid) {
     for (int i = 0; i < (int) data.contexts.size(); i++) {
         CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new FinishComputationTask(context, cu, getKernel(i), includeForce, includeEnergy, groups, data.contextEnergy[i], completionTimes[i], pinnedForceBuffer, contextForces, valid, interactionCounts[i]));
+        ComputeContext::WorkThread& thread = cu.getWorkThread();
+        thread.addTask(new FinishComputationTask(context, cu, getKernel(i), includeForce, includeEnergy, groups, data.contextEnergy[i], completionTimes[i],
+                pinnedForceBuffer, contextForces, valid, interactionCounts[i], peerCopyStream[i], peerCopyEvent[i], peerCopyEventLocal[i], loadBalance));
     }
     data.syncContexts();
+    CudaContext& cu = *data.contexts[0];
+    ContextSelector selector(cu);
+    if (cu.getPlatformData().peerAccessSupported)
+        for (int i = 1; i < data.contexts.size(); i++)
+            cuStreamWaitEvent(cu.getCurrentStream(), peerCopyEvent[i], 0);
     double energy = 0.0;
     for (int i = 0; i < (int) data.contextEnergy.size(); i++)
         energy += data.contextEnergy[i];
     if (includeForce && valid) {
         // Sum the forces from all devices.
         
-        CudaContext& cu = *data.contexts[0];
         if (!cu.getPlatformData().peerAccessSupported)
             contextForces.upload(pinnedForceBuffer, false);
         int bufferSize = 3*cu.getPaddedNumAtoms();
         int numBuffers = data.contexts.size()-1;
-        void* args[] = {&cu.getForce().getDevicePointer(), &contextForces.getDevicePointer(), &bufferSize, &numBuffers};
+        void* args[] = {&cu.unwrap(cu.getLongForceBuffer()).getDevicePointer(), &contextForces.getDevicePointer(), &bufferSize, &numBuffers};
         cu.executeKernel(sumKernel, args, bufferSize);
         
         // Balance work between the contexts by transferring a little nonbonded work from the context that
         // finished last to the one that finished first.
         
-        if (cu.getComputeForceCount() < 200) {
+        if (loadBalance) {
             int firstIndex = 0, lastIndex = 0;
             for (int i = 0; i < (int) completionTimes.size(); i++) {
                 if (completionTimes[i] < completionTimes[firstIndex])
@@ -251,334 +266,6 @@ double CudaParallelCalcForcesAndEnergyKernel::finishComputation(ContextImpl& con
 	}
     }
     return energy;
-}
-
-class CudaParallelCalcHarmonicBondForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcHarmonicBondForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcHarmonicBondForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcHarmonicBondForceKernel::CudaParallelCalcHarmonicBondForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcHarmonicBondForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcHarmonicBondForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcHarmonicBondForceKernel::initialize(const System& system, const HarmonicBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcHarmonicBondForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcHarmonicBondForceKernel::copyParametersToContext(ContextImpl& context, const HarmonicBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomBondForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomBondForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomBondForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomBondForceKernel::CudaParallelCalcCustomBondForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomBondForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomBondForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomBondForceKernel::initialize(const System& system, const CustomBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomBondForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomBondForceKernel::copyParametersToContext(ContextImpl& context, const CustomBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcHarmonicAngleForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcHarmonicAngleForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcHarmonicAngleForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcHarmonicAngleForceKernel::CudaParallelCalcHarmonicAngleForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcHarmonicAngleForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcHarmonicAngleForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcHarmonicAngleForceKernel::initialize(const System& system, const HarmonicAngleForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcHarmonicAngleForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcHarmonicAngleForceKernel::copyParametersToContext(ContextImpl& context, const HarmonicAngleForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomAngleForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomAngleForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomAngleForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomAngleForceKernel::CudaParallelCalcCustomAngleForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomAngleForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomAngleForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomAngleForceKernel::initialize(const System& system, const CustomAngleForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomAngleForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomAngleForceKernel::copyParametersToContext(ContextImpl& context, const CustomAngleForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcPeriodicTorsionForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcPeriodicTorsionForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcPeriodicTorsionForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcPeriodicTorsionForceKernel::CudaParallelCalcPeriodicTorsionForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcPeriodicTorsionForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcPeriodicTorsionForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcPeriodicTorsionForceKernel::initialize(const System& system, const PeriodicTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcPeriodicTorsionForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcPeriodicTorsionForceKernel::copyParametersToContext(ContextImpl& context, const PeriodicTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcRBTorsionForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcRBTorsionForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcRBTorsionForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcRBTorsionForceKernel::CudaParallelCalcRBTorsionForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcRBTorsionForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcRBTorsionForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcRBTorsionForceKernel::initialize(const System& system, const RBTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcRBTorsionForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcRBTorsionForceKernel::copyParametersToContext(ContextImpl& context, const RBTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCMAPTorsionForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCMAPTorsionForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCMAPTorsionForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCMAPTorsionForceKernel::CudaParallelCalcCMAPTorsionForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCMAPTorsionForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCMAPTorsionForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCMAPTorsionForceKernel::initialize(const System& system, const CMAPTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCMAPTorsionForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCMAPTorsionForceKernel::copyParametersToContext(ContextImpl& context, const CMAPTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomTorsionForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomTorsionForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomTorsionForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomTorsionForceKernel::CudaParallelCalcCustomTorsionForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomTorsionForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomTorsionForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomTorsionForceKernel::initialize(const System& system, const CustomTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomTorsionForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomTorsionForceKernel::copyParametersToContext(ContextImpl& context, const CustomTorsionForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
 }
 
 class CudaParallelCalcNonbondedForceKernel::Task : public CudaContext::WorkTask {
@@ -611,15 +298,15 @@ void CudaParallelCalcNonbondedForceKernel::initialize(const System& system, cons
 double CudaParallelCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy, bool includeDirect, bool includeReciprocal) {
     for (int i = 0; i < (int) data.contexts.size(); i++) {
         CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
+        ComputeContext::WorkThread& thread = cu.getWorkThread();
         thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, includeDirect, includeReciprocal, data.contextEnergy[i]));
     }
     return 0.0;
 }
 
-void CudaParallelCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const NonbondedForce& force) {
+void CudaParallelCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const NonbondedForce& force, int firstParticle, int lastParticle, int firstException, int lastException) {
     for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
+        getKernel(i).copyParametersToContext(context, force, firstParticle, lastParticle, firstException, lastException);
 }
 
 void CudaParallelCalcNonbondedForceKernel::getPMEParameters(double& alpha, int& nx, int& ny, int& nz) const {
@@ -628,168 +315,4 @@ void CudaParallelCalcNonbondedForceKernel::getPMEParameters(double& alpha, int& 
 
 void CudaParallelCalcNonbondedForceKernel::getLJPMEParameters(double& alpha, int& nx, int& ny, int& nz) const {
     dynamic_cast<const CudaCalcNonbondedForceKernel&>(kernels[0].getImpl()).getLJPMEParameters(alpha, nx, ny, nz);
-}
-
-class CudaParallelCalcCustomNonbondedForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomNonbondedForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomNonbondedForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomNonbondedForceKernel::CudaParallelCalcCustomNonbondedForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomNonbondedForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomNonbondedForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomNonbondedForceKernel::initialize(const System& system, const CustomNonbondedForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomNonbondedForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const CustomNonbondedForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomExternalForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomExternalForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomExternalForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomExternalForceKernel::CudaParallelCalcCustomExternalForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomExternalForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomExternalForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomExternalForceKernel::initialize(const System& system, const CustomExternalForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomExternalForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomExternalForceKernel::copyParametersToContext(ContextImpl& context, const CustomExternalForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomHbondForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomHbondForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomHbondForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomHbondForceKernel::CudaParallelCalcCustomHbondForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomHbondForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomHbondForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomHbondForceKernel::initialize(const System& system, const CustomHbondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomHbondForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomHbondForceKernel::copyParametersToContext(ContextImpl& context, const CustomHbondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
-}
-
-class CudaParallelCalcCustomCompoundBondForceKernel::Task : public CudaContext::WorkTask {
-public:
-    Task(ContextImpl& context, CudaCalcCustomCompoundBondForceKernel& kernel, bool includeForce,
-            bool includeEnergy, double& energy) : context(context), kernel(kernel),
-            includeForce(includeForce), includeEnergy(includeEnergy), energy(energy) {
-    }
-    void execute() {
-        energy += kernel.execute(context, includeForce, includeEnergy);
-    }
-private:
-    ContextImpl& context;
-    CudaCalcCustomCompoundBondForceKernel& kernel;
-    bool includeForce, includeEnergy;
-    double& energy;
-};
-
-CudaParallelCalcCustomCompoundBondForceKernel::CudaParallelCalcCustomCompoundBondForceKernel(std::string name, const Platform& platform, CudaPlatform::PlatformData& data, const System& system) :
-        CalcCustomCompoundBondForceKernel(name, platform), data(data) {
-    for (int i = 0; i < (int) data.contexts.size(); i++)
-        kernels.push_back(Kernel(new CudaCalcCustomCompoundBondForceKernel(name, platform, *data.contexts[i], system)));
-}
-
-void CudaParallelCalcCustomCompoundBondForceKernel::initialize(const System& system, const CustomCompoundBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).initialize(system, force);
-}
-
-double CudaParallelCalcCustomCompoundBondForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
-    for (int i = 0; i < (int) data.contexts.size(); i++) {
-        CudaContext& cu = *data.contexts[i];
-        CudaContext::WorkThread& thread = cu.getWorkThread();
-        thread.addTask(new Task(context, getKernel(i), includeForces, includeEnergy, data.contextEnergy[i]));
-    }
-    return 0.0;
-}
-
-void CudaParallelCalcCustomCompoundBondForceKernel::copyParametersToContext(ContextImpl& context, const CustomCompoundBondForce& force) {
-    for (int i = 0; i < (int) kernels.size(); i++)
-        getKernel(i).copyParametersToContext(context, force);
 }

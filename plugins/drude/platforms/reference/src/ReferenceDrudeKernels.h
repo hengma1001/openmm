@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013 Stanford University and the Authors.           *
+ * Portions copyright (c) 2013-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -35,7 +33,6 @@
 #include "ReferencePlatform.h"
 #include "openmm/DrudeKernels.h"
 #include "openmm/Vec3.h"
-#include "lbfgs.h"
 #include <utility>
 #include <vector>
 
@@ -48,7 +45,7 @@ namespace OpenMM {
  */
 class ReferenceCalcDrudeForceKernel : public CalcDrudeForceKernel {
 public:
-    ReferenceCalcDrudeForceKernel(std::string name, const Platform& platform) : CalcDrudeForceKernel(name, platform) {
+    ReferenceCalcDrudeForceKernel(const std::string& name, const Platform& platform) : CalcDrudeForceKernel(name, platform) {
     }
     /**
      * Initialize the kernel.
@@ -78,6 +75,7 @@ private:
     std::vector<double> charge, polarizability, aniso12, aniso34;
     std::vector<int> pair1, pair2;
     std::vector<double> pairThole;
+    bool periodic;
 };
 
 /**
@@ -85,7 +83,7 @@ private:
  */
 class ReferenceIntegrateDrudeLangevinStepKernel : public IntegrateDrudeLangevinStepKernel {
 public:
-    ReferenceIntegrateDrudeLangevinStepKernel(std::string name, const Platform& platform, ReferencePlatform::PlatformData& data) :
+    ReferenceIntegrateDrudeLangevinStepKernel(const std::string& name, const Platform& platform, ReferencePlatform::PlatformData& data) :
         IntegrateDrudeLangevinStepKernel(name, platform), data(data) {
     }
     ~ReferenceIntegrateDrudeLangevinStepKernel();
@@ -126,8 +124,8 @@ private:
  */
 class ReferenceIntegrateDrudeSCFStepKernel : public IntegrateDrudeSCFStepKernel {
 public:
-    ReferenceIntegrateDrudeSCFStepKernel(std::string name, const Platform& platform, ReferencePlatform::PlatformData& data) :
-        IntegrateDrudeSCFStepKernel(name, platform), data(data), minimizerPos(NULL) {
+    ReferenceIntegrateDrudeSCFStepKernel(const std::string& name, const Platform& platform, ReferencePlatform::PlatformData& data) :
+        IntegrateDrudeSCFStepKernel(name, platform), data(data) {
     }
     ~ReferenceIntegrateDrudeSCFStepKernel();
     /**
@@ -155,11 +153,10 @@ public:
 private:
     void minimize(ContextImpl& context, double tolerance);
     ReferencePlatform::PlatformData& data;
-    std::vector<int> drudeParticles;
     std::vector<double> particleInvMass;
-    lbfgsfloatval_t *minimizerPos;
-    lbfgs_parameter_t minimizerParams;
     double maxDrudeDistance;
+    std::vector<int> particle, particle1, particle2, particle3, particle4;
+    std::vector<double> k1, k2, k3;
 };
 
 } // namespace OpenMM

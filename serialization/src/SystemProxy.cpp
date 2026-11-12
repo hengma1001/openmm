@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2017 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2023 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -90,6 +88,18 @@ void SystemProxy::serialize(const void* object, SerializationNode& node) const {
                     siteNode.setDoubleProperty("wy"+index, wy[j]);
                 }
             }
+            else if (typeid(vsite) == typeid(SymmetrySite)) {
+                const SymmetrySite& site = dynamic_cast<const SymmetrySite&>(vsite);
+                Vec3 Rx, Ry, Rz;
+                site.getRotationMatrix(Rx, Ry, Rz);
+                Vec3 v = site.getOffsetVector();
+                particle.createChildNode("SymmetrySite").setIntProperty("p", site.getParticle(0))
+                    .setDoubleProperty("Rxx", Rx[0]).setDoubleProperty("Rxy", Rx[1]).setDoubleProperty("Rxz", Rx[2])
+                    .setDoubleProperty("Ryx", Ry[0]).setDoubleProperty("Ryy", Ry[1]).setDoubleProperty("Ryz", Ry[2])
+                    .setDoubleProperty("Rzx", Rz[0]).setDoubleProperty("Rzy", Rz[1]).setDoubleProperty("Rzz", Rz[2])
+                    .setDoubleProperty("vx", v[0]).setDoubleProperty("vy", v[1]).setDoubleProperty("vz", v[2])
+                    .setBoolProperty("useBoxVectors", site.getUseBoxVectors());
+            }
         }
     }
     SerializationNode& constraints = node.createChildNode("Constraints");
@@ -129,7 +139,7 @@ void* SystemProxy::deserialize(const SerializationNode& node) const {
                 else if (vsite.getName() == "OutOfPlaneSite")
                     system->setVirtualSite(i, new OutOfPlaneSite(vsite.getIntProperty("p1"), vsite.getIntProperty("p2"), vsite.getIntProperty("p3"), vsite.getDoubleProperty("w12"), vsite.getDoubleProperty("w13"), vsite.getDoubleProperty("wc")));
                 else if (vsite.getName() == "LocalCoordinatesSite") {
-                    vector<int> particles;
+                    vector<int> particleIndices;
                     vector<double> wo, wx, wy;
                     for (int j = 0; ; j++) {
                         stringstream ss;
@@ -137,14 +147,21 @@ void* SystemProxy::deserialize(const SerializationNode& node) const {
                         string index = ss.str();
                         if (!vsite.hasProperty("p"+index))
                             break;
-                        particles.push_back(vsite.getIntProperty("p"+index));
+                        particleIndices.push_back(vsite.getIntProperty("p"+index));
                         wo.push_back(vsite.getDoubleProperty("wo"+index));
                         wx.push_back(vsite.getDoubleProperty("wx"+index));
                         wy.push_back(vsite.getDoubleProperty("wy"+index));
                     }
                     Vec3 p(vsite.getDoubleProperty("pos1"), vsite.getDoubleProperty("pos2"), vsite.getDoubleProperty("pos3"));
-                    system->setVirtualSite(i, new LocalCoordinatesSite(particles, wo, wx, wy, p));
+                    system->setVirtualSite(i, new LocalCoordinatesSite(particleIndices, wo, wx, wy, p));
                 }
+                else if (vsite.getName() == "SymmetrySite")
+                    system->setVirtualSite(i, new SymmetrySite(vsite.getIntProperty("p"),
+                            Vec3(vsite.getDoubleProperty("Rxx"), vsite.getDoubleProperty("Rxy"), vsite.getDoubleProperty("Rxz")),
+                            Vec3(vsite.getDoubleProperty("Ryx"), vsite.getDoubleProperty("Ryy"), vsite.getDoubleProperty("Ryz")),
+                            Vec3(vsite.getDoubleProperty("Rzx"), vsite.getDoubleProperty("Rzy"), vsite.getDoubleProperty("Rzz")),
+                            Vec3(vsite.getDoubleProperty("vx"), vsite.getDoubleProperty("vy"), vsite.getDoubleProperty("vz")),
+                            vsite.getBoolProperty("useBoxVectors")));
             }
         }
         const SerializationNode& constraints = node.getChildNode("Constraints");

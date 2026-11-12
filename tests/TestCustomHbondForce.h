@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,6 +32,7 @@
 #include "openmm/CustomHbondForce.h"
 #include "openmm/HarmonicAngleForce.h"
 #include "openmm/HarmonicBondForce.h"
+#include "openmm/NonbondedForce.h"
 #include "openmm/PeriodicTorsionForce.h"
 #include "openmm/System.h"
 #include "openmm/VerletIntegrator.h"
@@ -223,6 +222,44 @@ void testCustomFunctions() {
     ASSERT_EQUAL_VEC(Vec3(0, -0.1, 0), forces[1], TOL);
     ASSERT_EQUAL_VEC(Vec3(-0.1, 0, 0), forces[2], TOL);
     ASSERT_EQUAL_TOL(0.1*2+0.1*2, state.getPotentialEnergy(), TOL);
+
+    // Try updating the tabulated function.
+
+    for (int i = 0; i < function.size(); i++)
+        function[i] *= 0.5;
+    dynamic_cast<Continuous1DFunction&>(custom->getTabulatedFunction(0)).setFunctionParameters(function, 0, 10);
+    custom->updateParametersInContext(context);
+    state = context.getState(State::Energy);
+    ASSERT_EQUAL_TOL(0.5*(0.1*2+0.1*2), state.getPotentialEnergy(), TOL);
+}
+
+void test2DFunction() {
+    System system;
+    system.addParticle(1.0);
+    system.addParticle(1.0);
+    system.addParticle(1.0);
+    VerletIntegrator integrator(0.01);
+    CustomHbondForce* custom = new CustomHbondForce("tab(dtype, atype)");
+    custom->addPerDonorParameter("dtype");
+    custom->addPerAcceptorParameter("atype");
+    custom->addDonor(1, 0, -1, {0.0});
+    custom->addDonor(2, 0, -1, {2.0});
+    custom->addAcceptor(0, 1, -1, {1.0});
+    vector<double> function = {0.0, 1.0, 2.0, 5.0, 6.0, 7.0};
+    custom->addTabulatedFunction("tab", new Discrete2DFunction(3, 2, function));
+    system.addForce(custom);
+    Context context(system, integrator, platform);
+    vector<Vec3> positions(3);
+    positions[0] = Vec3(0, 0, 0);
+    positions[1] = Vec3(0, 2, 0);
+    positions[2] = Vec3(2, 0, 0);
+    context.setPositions(positions);
+    State state = context.getState(State::Forces | State::Energy);
+    const vector<Vec3>& forces = state.getForces();
+    ASSERT_EQUAL_VEC(Vec3(0, 0, 0), forces[0], TOL);
+    ASSERT_EQUAL_VEC(Vec3(0, 0, 0), forces[1], TOL);
+    ASSERT_EQUAL_VEC(Vec3(0, 0, 0), forces[2], TOL);
+    ASSERT_EQUAL_TOL(12.0, state.getPotentialEnergy(), TOL);
 }
 
 void testIllegalVariable() {
@@ -271,6 +308,56 @@ void testParameters() {
     ASSERT_EQUAL_TOL(2*(2*1.8+2.1)+2*(2*1.5+2.1), state.getPotentialEnergy(), TOL);
 }
 
+void testLargeSystem(CustomHbondForce::NonbondedMethod method) {
+    int numParticles = 5000;
+    double boxSize = 3.0;
+    double cutoff = 1.0;
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0, 0), Vec3(0, boxSize, 0), Vec3(0, 0, boxSize));
+    CustomHbondForce* custom = new CustomHbondForce("(distance(d1,a1)-1)^2");
+    custom->setNonbondedMethod(method);
+    custom->setCutoffDistance(cutoff);
+    NonbondedForce* nb = new NonbondedForce(); // So that atom reordering will be done
+    nb->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
+    vector<Vec3> positions(numParticles);
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < numParticles; i++) {
+        system.addParticle(1.0);
+        if (i%2 == 0)
+            custom->addDonor(i, -1, -1);
+        else
+            custom->addAcceptor(i, -1, -1);
+        positions[i] = Vec3(boxSize*genrand_real2(sfmt), boxSize*genrand_real2(sfmt), boxSize*genrand_real2(sfmt));
+        nb->addParticle(0.0, 1.0, 0.0);
+    }
+    system.addForce(custom);
+    system.addForce(nb);
+    VerletIntegrator integrator(0.01);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    State state = context.getState(State::Energy | State::Forces);
+    double expectedEnergy = 0;
+    for (int i = 0; i < numParticles; i += 2) {
+        Vec3 expectedForce;
+        for (int j = 1; j < numParticles; j += 2) {
+            Vec3 d = positions[i]-positions[j];
+            if (method == CustomHbondForce::CutoffPeriodic) {
+                d[0] -= round(d[0]/boxSize)*boxSize;
+                d[1] -= round(d[1]/boxSize)*boxSize;
+                d[2] -= round(d[2]/boxSize)*boxSize;
+            }
+            double r = sqrt(d.dot(d));
+            if (method == CustomHbondForce::NoCutoff || r < cutoff) {
+                expectedEnergy += (r-1)*(r-1);
+                expectedForce -= 2*(r-1)*d/r;
+            }
+        }
+        ASSERT_EQUAL_VEC(expectedForce, state.getForces()[i], 1e-5);
+    }
+    ASSERT_EQUAL_TOL(expectedEnergy, state.getPotentialEnergy(), 1e-5);
+}
+
 void runPlatformTests();
 
 int main(int argc, char* argv[]) {
@@ -280,8 +367,12 @@ int main(int argc, char* argv[]) {
         testExclusions();
         testCutoff();
         testCustomFunctions();
+        test2DFunction();
         testIllegalVariable();
         testParameters();
+        testLargeSystem(CustomHbondForce::NoCutoff);
+        testLargeSystem(CustomHbondForce::CutoffNonPeriodic);
+        testLargeSystem(CustomHbondForce::CutoffPeriodic);
         runPlatformTests();
     }
     catch(const exception& e) {

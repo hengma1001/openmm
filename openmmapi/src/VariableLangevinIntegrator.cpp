@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -46,6 +44,7 @@ VariableLangevinIntegrator::VariableLangevinIntegrator(double temperature, doubl
     setTemperature(temperature);
     setFriction(frictionCoeff);
     setErrorTolerance(errorTol);
+    setMaximumStepSize(0.0);
     setConstraintTolerance(1e-5);
     setRandomNumberSeed(0);
     setStepSize(0.0);
@@ -60,14 +59,36 @@ void VariableLangevinIntegrator::initialize(ContextImpl& contextRef) {
     kernel.getAs<IntegrateVariableLangevinStepKernel>().initialize(contextRef.getSystem(), *this);
 }
 
+void VariableLangevinIntegrator::setTemperature(double temp) {
+    if (temp < 0)
+        throw OpenMMException("Temperature cannot be negative");
+    temperature = temp;
+}
+
+void VariableLangevinIntegrator::setFriction(double coeff) {
+    if (coeff < 0)
+        throw OpenMMException("Friction cannot be negative");
+    friction = coeff;
+}
+
+void VariableLangevinIntegrator::setErrorTolerance(double tol) {
+    if (tol <= 0)
+        throw OpenMMException("Error tolerance must be positive");
+    errorTol = tol;
+}
+
+void VariableLangevinIntegrator::setMaximumStepSize(double size) {
+    if (size < 0)
+        throw OpenMMException("Maximum step size cannot be negative");
+    maxStepSize = size;
+}
+
 void VariableLangevinIntegrator::cleanup() {
     kernel = Kernel();
 }
 
 vector<string> VariableLangevinIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateVariableLangevinStepKernel::Name());
-    return names;
+    return {IntegrateVariableLangevinStepKernel::Name()};
 }
 
 double VariableLangevinIntegrator::computeKineticEnergy() {
@@ -79,7 +100,7 @@ void VariableLangevinIntegrator::step(int steps) {
         throw OpenMMException("This Integrator is not bound to a context!");  
     for (int i = 0; i < steps; ++i) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         setStepSize(kernel.getAs<IntegrateVariableLangevinStepKernel>().execute(*context, *this, std::numeric_limits<double>::infinity()));
     }
 }
@@ -89,7 +110,7 @@ void VariableLangevinIntegrator::stepTo(double time) {
         throw OpenMMException("This Integrator is not bound to a context!");
     while (time > context->getTime()) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         setStepSize(kernel.getAs<IntegrateVariableLangevinStepKernel>().execute(*context, *this, time));
     }
 }

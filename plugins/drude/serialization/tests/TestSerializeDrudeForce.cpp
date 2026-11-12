@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMDrude                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2013 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,8 @@ void testSerialization() {
     // Create a Force.
 
     DrudeForce force1;
+    force1.setForceGroup(3);
+    force1.setName("custom name");
     force1.addParticle(0, 1, 2, 3, 4, 0.5, 1.0, 1.5, 2.0);
     force1.addParticle(2, 3, 7, 8, 9, 0.1, 1e-4, 1.0, 0.9);
     force1.addParticle(5, 6, -1, -1, -1, 0.2, 0.1, 1.0, 1.0);
@@ -59,6 +59,8 @@ void testSerialization() {
 
     // Compare the two forces to see if they are identical.  
     DrudeForce& force2 = *copy;
+    ASSERT_EQUAL(force1.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force1.getName(), force2.getName());
     ASSERT_EQUAL(force1.getNumParticles(), force2.getNumParticles());
     for (int i = 0; i < (int) force1.getNumParticles(); i++) {
         int a1, a2, a3, a4, a5, b1, b2, b3, b4, b5;

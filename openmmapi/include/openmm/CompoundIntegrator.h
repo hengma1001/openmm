@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2015-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2015-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -43,28 +41,48 @@ namespace OpenMM {
  * switching back and forth between them.  To use it, create whatever other Integrators
  * you need, then add all of them to a CustomIntegrator:
  * 
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * CompoundIntegrator compoundIntegrator;
  * compoundIntegrator.addIntegrator(new VerletIntegrator(0.001));
  * compoundIntegrator.addIntegrator(new LangevinIntegrator(300.0, 1.0, 0.001));
- * </pre></tt>
+ * </c++>
+ * <python>
+ * compoundIntegrator = CompoundIntegrator()
+ * compoundIntegrator.addIntegrator(VerletIntegrator(0.001))
+ * compoundIntegrator.addIntegrator(LangevinIntegrator(300.0, 1.0, 0.001))
+ * </python>
+ * \endverbatim
  * 
  * Next create a Context, specifying the CompoundIntegrator as the Integrator to use for
  * the Context:
  * 
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * Context context(system, compoundIntegrator);
- * </pre></tt>
+ * </c++>
+ * <python>
+ * context = Context(system, compoundIntegrator)
+ * </python>
+ * \endverbatim
  * 
  * Finally, call setCurrentIntegrator() to set which Integrator is active.  That one will
  * be used for all calls to step() until the next time you change it.
  * 
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * compoundIntegrator.setCurrentIntegrator(0);
  * compoundIntegrator.step(1000); // Take 1000 steps of Verlet dynamics
  * compoundIntegrator.setCurrentIntegrator(1);
  * compoundIntegrator.step(1000); // Take 1000 steps of Langevin dynamics
- * </pre></tt>
+ * </c++>
+ * <python>
+ * compoundIntegrator.setCurrentIntegrator(0)
+ * compoundIntegrator.step(1000) # Take 1000 steps of Verlet dynamics
+ * compoundIntegrator.setCurrentIntegrator(1)
+ * compoundIntegrator.step(1000) # Take 1000 steps of Langevin dynamics
+ * </python>
+ * \endverbatim
  * 
  * When switching between integrators, it is important to make sure they are compatible with
  * each other, and that they will interpret the positions and velocities in the same way.
@@ -149,6 +167,23 @@ public:
      * @param steps   the number of time steps to take
      */
     void step(int steps);
+    /**
+     * Get which force groups to use for integration.  By default, all force groups
+     * are included.  This is interpreted as a set of bit flags: the forces from group i
+     * will be included if (groups&(1<<i)) != 0.
+     * 
+     * This method returns the integration force groups for the current Integator.
+     */
+    int getIntegrationForceGroups() const;
+    /**
+     * Set which force groups to use for integration.  By default, all force groups
+     * are included.  This is interpreted as a set of bit flags: the forces from group i
+     * will be included if (groups&(1<<i)) != 0.
+     * 
+     * Calling this method sets the integration force groups for all Integrators
+     * containined in this CompoundIntegrator.
+     */
+    void setIntegrationForceGroups(int groups);
 protected:
     /**
      * This will be called by the Context when it is created.  It informs the Integrator
@@ -187,6 +222,36 @@ protected:
      * The implementation calls computeKineticEnergy() on whichever Integrator has been set as current.
      */
     double computeKineticEnergy();
+    /**
+     * Get the time interval by which velocities are offset from positions.  This is used to
+     * adjust velocities when setVelocitiesToTemperature() is called on a Context.
+     */
+    double getVelocityTimeOffset() const {
+        return getIntegrator(0).getVelocityTimeOffset();
+    }
+    /**
+     * This is called while writing checkpoints.  It gives the integrator a chance to write
+     * its own data.
+     */
+    void createCheckpoint(std::ostream& stream) const;
+    /**
+     * This is called while loading a checkpoint.  The integrator should read in whatever
+     * data it wrote in createCheckpoint() and update its internal state accordingly.
+     */
+    void loadCheckpoint(std::istream& stream);
+    /**
+     * This is called while creating a State.  The Integrator should store the values
+     * of all time-varying parameters into the SerializationNode so they can be saved
+     * as part of the state.
+     */
+    void serializeParameters(SerializationNode& node) const;
+    /**
+     * This is called when loading a previously saved State.  The Integrator should
+     * load the values of all time-varying parameters from the SerializationNode.  If
+     * the node contains parameters that are not defined for this Integrator, it should
+     * throw an exception.
+     */
+    void deserializeParameters(const SerializationNode& node);
 private:
     int currentIntegrator;
     std::vector<Integrator*> integrators;

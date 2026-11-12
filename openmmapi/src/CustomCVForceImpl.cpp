@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2017 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -42,6 +40,7 @@ using namespace std;
 
 CustomCVForceImpl::CustomCVForceImpl(const CustomCVForce& owner) : owner(owner), innerIntegrator(1.0),
         innerContext(NULL) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomCVForceImpl::~CustomCVForceImpl() {
@@ -80,15 +79,23 @@ void CustomCVForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomCVForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomCVForceKernel>().execute(context, getContextImpl(*innerContext), includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> CustomCVForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcCustomCVForceKernel::Name());
-    return names;
+    return {CalcCustomCVForceKernel::Name()};
+}
+
+vector<pair<int, int> > CustomCVForceImpl::getBondedParticles() const {
+    vector<pair<int, int> > bonds;
+    const ContextImpl& innerContextImpl = getContextImpl(*innerContext);
+    for (auto& impl : innerContextImpl.getForceImpls()) {
+        for (auto& bond : impl->getBondedParticles())
+            bonds.push_back(bond);
+    }
+    return bonds;
 }
 
 map<string, double> CustomCVForceImpl::getDefaultParameters() {
@@ -115,4 +122,11 @@ Context& CustomCVForceImpl::getInnerContext() {
 void CustomCVForceImpl::updateParametersInContext(ContextImpl& context) {
     kernel.getAs<CalcCustomCVForceKernel>().copyParametersToContext(context, owner);
     context.systemChanged();
+}
+
+vector<const Force*> CustomCVForceImpl::getContainedForces() const {
+    vector<const Force*> forces;
+    for (int i = 0; i < owner.getNumCollectiveVariables(); i++)
+        forces.push_back(&owner.getCollectiveVariable(i));
+    return forces;
 }

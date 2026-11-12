@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,7 +30,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.                                     *
  * -------------------------------------------------------------------------- */
 
-#include "openmm/Integrator.h"
+#include "openmm/DrudeIntegrator.h"
 #include "openmm/Kernel.h"
 #include "openmm/internal/windowsExportDrude.h"
 
@@ -47,13 +45,13 @@ namespace OpenMM {
  *
  * This integrator can optionally set an upper limit on how far any Drude particle is ever allowed to
  * get from its parent particle.  This can sometimes help to improve stability.  The limit is enforced
- * with a hard wall constraint.
+ * with a hard wall constraint.  By default the limit is set to 0.02 nm.
  * 
  * This Integrator requires the System to include a DrudeForce, which it uses to identify the Drude
  * particles.
  */
 
-class OPENMM_EXPORT_DRUDE DrudeLangevinIntegrator : public Integrator {
+class OPENMM_EXPORT_DRUDE DrudeLangevinIntegrator : public DrudeIntegrator {
 public:
     /**
      * Create a DrudeLangevinIntegrator.
@@ -78,9 +76,7 @@ public:
      *
      * @param temp    the temperature of the heat bath, measured in Kelvin
      */
-    void setTemperature(double temp) {
-        temperature = temp;
-    }
+    void setTemperature(double temp);
     /**
      * Get the friction coefficient which determines how strongly the system is coupled to
      * the main heat bath (in inverse ps).
@@ -96,25 +92,7 @@ public:
      *
      * @param coeff    the friction coefficient, measured in 1/ps
      */
-    void setFriction(double coeff) {
-        friction = coeff;
-    }
-    /**
-     * Get the temperature of the heat bath applied to internal coordinates of Drude particles (in Kelvin).
-     *
-     * @return the temperature of the heat bath, measured in Kelvin
-     */
-    double getDrudeTemperature() const {
-        return drudeTemperature;
-    }
-    /**
-     * Set the temperature of the heat bath applied to internal coordinates of Drude particles (in Kelvin).
-     *
-     * @param temp    the temperature of the heat bath, measured in Kelvin
-     */
-    void setDrudeTemperature(double temp) {
-        drudeTemperature = temp;
-    }
+    void setFriction(double coeff);
     /**
      * Get the friction coefficient which determines how strongly the internal coordinates of Drude particles
      * are coupled to the heat bath (in inverse ps).
@@ -130,73 +108,50 @@ public:
      *
      * @param coeff    the friction coefficient, measured in 1/ps
      */
-    void setDrudeFriction(double coeff) {
-        drudeFriction = coeff;
-    }
-    /**
-     * Get the maximum distance a Drude particle can ever move from its parent particle, measured in nm.  This is implemented
-     * with a hard wall constraint.  If this distance is set to 0 (the default), the hard wall constraint is omitted.
-     */
-    double getMaxDrudeDistance() const;
-    /**
-     * Set the maximum distance a Drude particle can ever move from its parent particle, measured in nm.  This is implemented
-     * with a hard wall constraint.  If this distance is set to 0 (the default), the hard wall constraint is omitted.
-     */
-    void setMaxDrudeDistance(double distance);
-    /**
-     * Get the random number seed.  See setRandomNumberSeed() for details.
-     */
-    int getRandomNumberSeed() const {
-        return randomNumberSeed;
-    }
-    /**
-     * Set the random number seed.  The precise meaning of this parameter is undefined, and is left up
-     * to each Platform to interpret in an appropriate way.  It is guaranteed that if two simulations
-     * are run with different random number seeds, the sequence of random forces will be different.  On
-     * the other hand, no guarantees are made about the behavior of simulations that use the same seed.
-     * In particular, Platforms are permitted to use non-deterministic algorithms which produce different
-     * results on successive runs, even if those runs were initialized identically.
-     *
-     * If seed is set to 0 (which is the default value assigned), a unique seed is chosen when a Context
-     * is created from this Force. This is done to ensure that each Context receives unique random seeds
-     * without you needing to set them explicitly.
-     */
-    void setRandomNumberSeed(int seed) {
-        randomNumberSeed = seed;
-    }
+    void setDrudeFriction(double coeff);
     /**
      * Advance a simulation through time by taking a series of time steps.
      *
      * @param steps   the number of time steps to take
      */
-    void step(int steps);
+    void step(int steps) override;
+    /**
+     * Compute the instantaneous temperature of the System, measured in Kelvin.
+     * This is calculated based on the kinetic energy of the ordinary particles (ones
+     * not attached to a Drude particle), as well as the center of mass motion of the
+     * Drude particle pairs.  It does not include the internal motion of the pairs.
+     * On average, this should be approximately equal to the value returned by
+     * getTemperature().
+     */
+    double computeSystemTemperature();
+    /**
+     * Compute the instantaneous temperature of the Drude system, measured in Kelvin.
+     * This is calculated based on the kinetic energy of the internal motion of Drude pairs
+     * and should remain close to the prescribed Drude temperature.
+     */
+    double computeDrudeTemperature();
 protected:
     /**
      * This will be called by the Context when it is created.  It informs the Integrator
      * of what context it will be integrating, and gives it a chance to do any necessary initialization.
      * It will also get called again if the application calls reinitialize() on the Context.
      */
-    void initialize(ContextImpl& context);
+    void initialize(ContextImpl& context) override;
     /**
      * This will be called by the Context when it is destroyed to let the Integrator do any necessary
      * cleanup.  It will also get called again if the application calls reinitialize() on the Context.
      */
-    void cleanup();
-    /**
-     * When the user modifies the state, we need to mark that the forces need to be recalculated.
-     */
-    void stateChanged(State::DataType changed);
+    void cleanup() override;
     /**
      * Get the names of all Kernels used by this Integrator.
      */
-    std::vector<std::string> getKernelNames();
+    std::vector<std::string> getKernelNames() override;
     /**
      * Compute the kinetic energy of the system at the current time.
      */
-    double computeKineticEnergy();
+    double computeKineticEnergy() override;
 private:
-    double temperature, friction, drudeTemperature, drudeFriction, maxDrudeDistance;
-    int randomNumberSeed;
+    double temperature, friction, drudeFriction;
     Kernel kernel;
 };
 

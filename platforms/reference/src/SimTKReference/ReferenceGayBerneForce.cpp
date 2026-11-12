@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2016 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -274,7 +272,7 @@ double ReferenceGayBerneForce::computeOneInteraction(int particle1, int particle
     for (int j = 0; j < 2; j++) {
         int particle = (j == 0 ? particle1 : particle2);
         Vec3 dudq = (kappa*G[particle]).cross(kappa*(temp*dUSLJdr));
-        Vec3 dchidq = (iota*B[particle]).cross(iota)*(-4*rInv2);
+        Vec3 dchidq = (iota*B[particle]).cross(iota)*(-8*rInv2*sqrt(chi));
         double (&g12)[3][3] = G12.v;
         double (&a)[3][3] = A[particle].v;
         ParticleInfo& p = particles[particle];

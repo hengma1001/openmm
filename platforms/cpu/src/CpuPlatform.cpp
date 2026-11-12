@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -64,16 +62,19 @@ CpuPlatform::CpuPlatform() {
     deprecatedPropertyReplacements["CpuThreads"] = CpuThreads();
     CpuKernelFactory* factory = new CpuKernelFactory();
     registerKernelFactory(CalcForcesAndEnergyKernel::Name(), factory);
+    registerKernelFactory(UpdateStateDataKernel::Name(), factory);
     registerKernelFactory(CalcHarmonicAngleForceKernel::Name(), factory);
     registerKernelFactory(CalcPeriodicTorsionForceKernel::Name(), factory);
     registerKernelFactory(CalcRBTorsionForceKernel::Name(), factory);
     registerKernelFactory(CalcNonbondedForceKernel::Name(), factory);
+    registerKernelFactory(CalcConstantPotentialForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomNonbondedForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomManyParticleForceKernel::Name(), factory);
     registerKernelFactory(CalcGBSAOBCForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomGBForceKernel::Name(), factory);
     registerKernelFactory(CalcGayBerneForceKernel::Name(), factory);
-    registerKernelFactory(IntegrateLangevinStepKernel::Name(), factory);
+    registerKernelFactory(CalcLCPOForceKernel::Name(), factory);
+    registerKernelFactory(IntegrateLangevinMiddleStepKernel::Name(), factory);
     platformProperties.push_back(CpuThreads());
     platformProperties.push_back(CpuDeterministicForces());
     int threads = getNumProcessors();
@@ -111,18 +112,19 @@ bool CpuPlatform::isProcessorSupported() {
 }
 
 void CpuPlatform::contextCreated(ContextImpl& context, const map<string, string>& properties) const {
-    ReferencePlatform::contextCreated(context, properties);
     const string& threadsPropValue = (properties.find(CpuThreads()) == properties.end() ?
             getPropertyDefaultValue(CpuThreads()) : properties.find(CpuThreads())->second);
+    map<string, string> refProperties = properties;
+    refProperties["Threads"] = threadsPropValue;
+    ReferencePlatform::contextCreated(context, refProperties);
     string deterministicForcesValue = (properties.find(CpuDeterministicForces()) == properties.end() ?
             getPropertyDefaultValue(CpuDeterministicForces()) : properties.find(CpuDeterministicForces())->second);
-    int numThreads;
-    stringstream(threadsPropValue) >> numThreads;
     transform(deterministicForcesValue.begin(), deterministicForcesValue.end(), deterministicForcesValue.begin(), ::tolower);
     bool deterministicForces = (deterministicForcesValue == "true");
-    PlatformData* data = new PlatformData(context.getSystem().getNumParticles(), numThreads, deterministicForces);
+    ReferencePlatform::PlatformData* refData = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    PlatformData* data = new PlatformData(context.getSystem().getNumParticles(), refData->threads, deterministicForces);
     contextData[&context] = data;
-    ReferenceConstraints& constraints = *(ReferenceConstraints*) reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData())->constraints;
+    ReferenceConstraints& constraints = *(ReferenceConstraints*) refData->constraints;
     if (constraints.settle != NULL) {
         CpuSETTLE* parallelSettle = new CpuSETTLE(context.getSystem(), *(ReferenceSETTLEAlgorithm*) constraints.settle, data->threads);
         delete constraints.settle;
@@ -146,9 +148,10 @@ const CpuPlatform::PlatformData& CpuPlatform::getPlatformData(const ContextImpl&
     return *contextData[&context];
 }
 
-CpuPlatform::PlatformData::PlatformData(int numParticles, int numThreads, bool deterministicForces) : posq(4*numParticles), threads(numThreads),
-        deterministicForces(deterministicForces), neighborList(NULL), cutoff(0.0), paddedCutoff(0.0), anyExclusions(false), currentPosqIndex(-1), nextPosqIndex(0) {
-    numThreads = threads.getNumThreads();
+CpuPlatform::PlatformData::PlatformData(int numParticles, ThreadPool& threads, bool deterministicForces) : posq(4*numParticles), threads(threads),
+        deterministicForces(deterministicForces), numParticles(numParticles), neighborList(NULL), cutoff(0.0), paddedCutoff(0.0), anyExclusions(false),
+        currentPosqIndex(-1), nextPosqIndex(0) {
+    int numThreads = threads.getNumThreads();
     threadForce.resize(numThreads);
     for (int i = 0; i < numThreads; i++)
         threadForce[i].resize(4*numParticles);
@@ -164,11 +167,14 @@ CpuPlatform::PlatformData::~PlatformData() {
         delete neighborList;
 }
 
-bool isVec8Supported();
-
 void CpuPlatform::PlatformData::requestNeighborList(double cutoffDistance, double padding, bool useExclusions, const vector<set<int> >& exclusionList) {
-    if (neighborList == NULL)
-        neighborList = new CpuNeighborList(isVec8Supported() ? 8 : 4);
+    if (neighborList == NULL) {
+        neighborList = new CpuNeighborList(getVectorWidth());
+        if (cutoffDistance == 0.0)
+            neighborList->createDenseNeighborList(numParticles, exclusionList);
+    }
+    else if ((cutoffDistance == 0.0) != (cutoff == 0.0))
+        throw OpenMMException("All nonbonded Forces must agree on whether to apply a cutoff");
     if (cutoffDistance > cutoff)
         cutoff = cutoffDistance;
     if (cutoffDistance+padding > paddedCutoff)

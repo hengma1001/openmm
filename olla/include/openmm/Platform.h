@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -52,9 +50,14 @@ class KernelFactory;
  *
  * To get a Platform object, call
  *
- * <pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * Platform& platform = Platform::findPlatform(kernelNames);
- * </pre>
+ * </c++>
+ * <python>
+ * platform = Platform.findPlatform(kernelNames)
+ * </python>
+ * \endverbatim
  *
  * passing in the names of all kernels that will be required for the calculation you plan to perform.  It
  * will return the fastest available Platform which provides implementations of all the specified kernels.
@@ -120,6 +123,27 @@ public:
      */
     void setPropertyDefaultValue(const std::string& property, const std::string& value);
     /**
+     * Get a list of available devices for this Platform.
+     *
+     * This method is relevant to Platforms that offer a choice of devices to run calculations on.
+     * For example, if a Platform does calculations on GPUs and it is running on a computer with
+     * multiple GPUs, you can choose which one to use by specifying Platform-specific properties.
+     *
+     * The returned value contains one entry for each available device.  Each entry contains the
+     * values of any properties that are specific to the device, such as its name or index.  You
+     * can select a device for a Context by passing the entry to its constructor.
+     *
+     * You can optionally pass one or more property values to this method, in which case they act
+     * as filters.  Devices are only returned if they are compatible with the specified values.
+     * For example, some Platforms offer a choice of precision modes, but not all devices support
+     * all precision modes.  If you specify double precision, only devices that support double
+     * precision will be returned.
+     *
+     * Some Platforms do not offer a choice of devices.  In those cases, this method returns a
+     * single entry that contains no properties.
+     */
+    virtual std::vector<std::map<std::string, std::string> > getDevices(const std::map<std::string, std::string>& filters={}) const;
+    /**
      * This is called whenever a new Context is created.  It gives the Platform a chance to initialize
      * the context and store platform-specific data in it.
      *
@@ -183,12 +207,20 @@ public:
      */
     static Platform& getPlatform(int index);
     /**
+     * Get a registered Platform by name.  If no Platform with that name has been
+     * registered, this throws an exception.
+     */
+    static Platform& getPlatform(const std::string& name);
+    /**
      * Get any failures caused during the last call to loadPluginsFromDirectory
      */
     static std::vector<std::string> getPluginLoadFailures();
     /**
      * Get the registered Platform with a particular name.  If no Platform with that name has been
      * registered, this throws an exception.
+     * 
+     * This is identical to the version of getPlatform() that takes a name.  It
+     * is here for backward compatibility.
      */
     static Platform& getPlatformByName(const std::string& name);
     /**
@@ -213,19 +245,24 @@ public:
      */
     static void loadPluginLibrary(const std::string& file);
     /**
-     * Load multiple dynamic libraries (DLLs) which contain OpenMM plugins from a single directory.
-     * This method loops over every file contained in the specified directory and calls loadPluginLibrary()
+     * Load multiple dynamic libraries (DLLs) which contain OpenMM plugins from one or more directories.
+     * Multiple fully-qualified paths can be joined together with ':' on unix-like systems
+     * (or ';' on windows-like systems); each will be searched for plugins, in-order. For example,
+     * '/foo/plugins:/bar/plugins' will search both `/foo/plugins` and `/bar/plugins`. If an
+     * identically-named plugin is encountered twice it will be loaded at both points; be careful!!!
+     *
+     * This method loops over every file contained in the specified directories and calls loadPluginLibrary()
      * for each one.  If an error occurs while trying to load a particular file, that file is simply
      * ignored. You can retrieve a list of all such errors by calling getPluginLoadFailures().
      *
-     * @param directory    the path to the directory containing libraries to load
+     * @param directory    a ':' (unix) or ';' (windows) deliminated list of paths containing libraries to load
      * @return the names of all files which were successfully loaded as libraries
      */
     static std::vector<std::string> loadPluginsFromDirectory(const std::string& directory);
     /**
      * Get the default directory from which to load plugins.  If the environment variable
      * OPENMM_PLUGIN_DIR is set, this returns its value.  Otherwise, it returns a platform
-     * specific default location.
+     * specific default location. 
      *
      * @return the path to the default plugin directory
      */

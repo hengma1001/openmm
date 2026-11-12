@@ -37,6 +37,7 @@ class ReferenceMonteCarloBarostat {
 
        std::vector<double> savedAtomPositions[3];
        std::vector<std::vector<int> > molecules;
+       std::vector<double> masses;
 
    public:
 
@@ -46,7 +47,7 @@ class ReferenceMonteCarloBarostat {
 
          --------------------------------------------------------------------------------------- */
 
-       ReferenceMonteCarloBarostat(int numAtoms, const std::vector<std::vector<int> >& molecules);
+       ReferenceMonteCarloBarostat(int numAtoms, const std::vector<std::vector<int> >& molecules, const std::vector<double>& masses);
 
       /**---------------------------------------------------------------------------------------
 
@@ -58,17 +59,33 @@ class ReferenceMonteCarloBarostat {
 
       /**---------------------------------------------------------------------------------------
 
-         Apply the barostat at the start of a time step, scaling x, y, and z coordinates independently.
+         Save the positions before applying the barostat.
+
+         @param atomPositions      atom positions
+
+         --------------------------------------------------------------------------------------- */
+
+      void savePositions(std::vector<OpenMM::Vec3>& atomPositions);
+
+      /**---------------------------------------------------------------------------------------
+
+         Apply the barostat at the start of a time step, applying an upper triangular deformation
+         to the x, y, and z coordinates.  When the shear factors are zero this reduces to scaling
+         the x, y, and z coordinates independently.
 
          @param atomPositions      atom positions
          @param boxVectors         the periodic box vectors
          @param scaleX             the factor by which to scale atomic x coordinates
          @param scaleY             the factor by which to scale atomic y coordinates
          @param scaleZ             the factor by which to scale atomic z coordinates
+         @param scaleXY            the factor by which the y coordinate contributes to the new x coordinate
+         @param scaleXZ            the factor by which the z coordinate contributes to the new x coordinate
+         @param scaleYZ            the factor by which the z coordinate contributes to the new y coordinate
 
          --------------------------------------------------------------------------------------- */
 
-      void applyBarostat(std::vector<OpenMM::Vec3>& atomPositions, const OpenMM::Vec3* boxVectors, double scaleX, double scaleY, double scaleZ);
+      void applyBarostat(std::vector<OpenMM::Vec3>& atomPositions, const OpenMM::Vec3* boxVectors, double scaleX, double scaleY, double scaleZ,
+                         double scaleXY=0, double scaleXZ=0, double scaleYZ=0);
 
       /**---------------------------------------------------------------------------------------
 
@@ -80,6 +97,17 @@ class ReferenceMonteCarloBarostat {
 
       void restorePositions(std::vector<OpenMM::Vec3>& atomPositions);
 
+      /**---------------------------------------------------------------------------------------
+
+         Compute the kinetic energy of molecular center of mass translations.
+
+         @param velocities      atom velocities
+         @param ke              a vector to store the kinetic energy components into
+         @param components      the number of components to calculate
+
+         --------------------------------------------------------------------------------------- */
+
+      void computeMolecularKineticEnergy(const std::vector<OpenMM::Vec3>& velocities, std::vector<double>& ke, int components);
 };
 
 } // namespace OpenMM

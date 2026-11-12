@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -27,9 +25,9 @@
 #include "openmm/OpenMMException.h"
 #include "CudaNonbondedUtilities.h"
 #include "CudaArray.h"
+#include "CudaContext.h"
 #include "CudaKernelSources.h"
 #include "CudaExpressionUtilities.h"
-#include "CudaSort.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -46,44 +44,48 @@ using namespace std;
     }
 
 
-class CudaNonbondedUtilities::BlockSortTrait : public CudaSort::SortTrait {
+class CudaNonbondedUtilities::BlockSortTrait : public ComputeSortImpl::SortTrait {
 public:
-    BlockSortTrait(bool useDouble) : useDouble(useDouble) {
-    }
-    int getDataSize() const {return useDouble ? sizeof(double2) : sizeof(float2);}
-    int getKeySize() const {return useDouble ? sizeof(double) : sizeof(float);}
-    const char* getDataType() const {return "real2";}
-    const char* getKeyType() const {return "real";}
-    const char* getMinKey() const {return "-3.40282e+38f";}
-    const char* getMaxKey() const {return "3.40282e+38f";}
-    const char* getMaxValue() const {return "make_real2(3.40282e+38f, 3.40282e+38f)";}
-    const char* getSortKey() const {return "value.x";}
-private:
-    bool useDouble;
+    BlockSortTrait() {}
+    int getDataSize() const {return sizeof(int);}
+    int getKeySize() const {return sizeof(int);}
+    const char* getDataType() const {return "unsigned int";}
+    const char* getKeyType() const {return "unsigned int";}
+    const char* getMinKey() const {return "0";}
+    const char* getMaxKey() const {return "0xFFFFFFFFu";}
+    const char* getMaxValue() const {return "0xFFFFFFFFu";}
+    const char* getSortKey() const {return "value";}
 };
 
-CudaNonbondedUtilities::CudaNonbondedUtilities(CudaContext& context) : context(context), useCutoff(false), usePeriodic(false), anyExclusions(false), usePadding(true),
-        blockSorter(NULL), pinnedCountBuffer(NULL), forceRebuildNeighborList(true), lastCutoff(0.0), groupFlags(0), canUsePairList(true) {
+CudaNonbondedUtilities::CudaNonbondedUtilities(CudaContext& context) : context(context), useCutoff(false), usePeriodic(false), useNeighborList(false), anyExclusions(false), usePadding(true),
+        pinnedCountBuffer(NULL), forceRebuildNeighborList(true), groupFlags(0), canUsePairList(true), tilesAfterReorder(0), singlePairsAfterReorder(0) {
     // Decide how many thread blocks to use.
 
     string errorMessage = "Error initializing nonbonded utilities";
     int multiprocessors;
     CHECK_RESULT(cuDeviceGetAttribute(&multiprocessors, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, context.getDevice()));
-    CHECK_RESULT(cuEventCreate(&downloadCountEvent, 0));
-    CHECK_RESULT(cuMemHostAlloc((void**) &pinnedCountBuffer, 2*sizeof(int), CU_MEMHOSTALLOC_PORTABLE));
+    CHECK_RESULT(cuEventCreate(&downloadCountEvent, context.getEventFlags()));
+    CHECK_RESULT(cuMemHostAlloc((void**) &pinnedCountBuffer, 2*sizeof(unsigned int), CU_MEMHOSTALLOC_PORTABLE));
     numForceThreadBlocks = 4*multiprocessors;
     forceThreadBlockSize = (context.getComputeCapability() < 2.0 ? 128 : 256);
+    
+    // When building the neighbor list, we can optionally use large blocks (1024 atoms) to
+    // accelerate the process.  This makes building the neighbor list faster, but it prevents
+    // us from sorting atom blocks by size, which leads to a slightly less efficient neighbor
+    // list.  We guess based on system size which will be faster.
+
+    useLargeBlocks = (context.getNumAtoms() > 90000);
+    setKernelSource(CudaKernelSources::nonbonded);
 }
 
 CudaNonbondedUtilities::~CudaNonbondedUtilities() {
-    if (blockSorter != NULL)
-        delete blockSorter;
     if (pinnedCountBuffer != NULL)
         cuMemFreeHost(pinnedCountBuffer);
     cuEventDestroy(downloadCountEvent);
 }
 
-void CudaNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance, const vector<vector<int> >& exclusionList, const string& kernel, int forceGroup, bool supportsPairList) {
+void CudaNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance,
+        const vector<vector<int> >& exclusionList, const string& kernel, int forceGroup, bool useNeighborList, bool supportsPairList) {
     if (groupCutoff.size() > 0) {
         if (usesCutoff != useCutoff)
             throw OpenMMException("All Forces must agree on whether to use a cutoff");
@@ -96,6 +98,7 @@ void CudaNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, 
         requestExclusions(exclusionList);
     useCutoff = usesCutoff;
     usePeriodic = usesPeriodic;
+    this->useNeighborList |= (useNeighborList && useCutoff);
     groupCutoff[forceGroup] = cutoffDistance;
     groupFlags |= 1<<forceGroup;
     canUsePairList &= supportsPairList;
@@ -109,11 +112,11 @@ void CudaNonbondedUtilities::addInteraction(bool usesCutoff, bool usesPeriodic, 
     }
 }
 
-void CudaNonbondedUtilities::addParameter(const ParameterInfo& parameter) {
+void CudaNonbondedUtilities::addParameter(ComputeParameterInfo parameter) {
     parameters.push_back(parameter);
 }
 
-void CudaNonbondedUtilities::addArgument(const ParameterInfo& parameter) {
+void CudaNonbondedUtilities::addArgument(ComputeParameterInfo parameter) {
     arguments.push_back(parameter);
 }
 
@@ -151,7 +154,7 @@ void CudaNonbondedUtilities::requestExclusions(const vector<vector<int> >& exclu
     }
 }
 
-static bool compareUshort2(ushort2 a, ushort2 b) {
+static bool compareInt2(int2 a, int2 b) {
     return ((a.y < b.y) || (a.y == b.y && a.x < b.x));
 }
 
@@ -183,15 +186,15 @@ void CudaNonbondedUtilities::initialize(const System& system) {
             tilesWithExclusions.insert(make_pair(max(x, y), min(x, y)));
         }
     }
-    vector<ushort2> exclusionTilesVec;
+    vector<int2> exclusionTilesVec;
     for (set<pair<int, int> >::const_iterator iter = tilesWithExclusions.begin(); iter != tilesWithExclusions.end(); ++iter)
-        exclusionTilesVec.push_back(make_ushort2((unsigned short) iter->first, (unsigned short) iter->second));
-    sort(exclusionTilesVec.begin(), exclusionTilesVec.end(), compareUshort2);
-    exclusionTiles.initialize<ushort2>(context, exclusionTilesVec.size(), "exclusionTiles");
+        exclusionTilesVec.push_back(make_int2(iter->first, iter->second));
+    sort(exclusionTilesVec.begin(), exclusionTilesVec.end(), compareInt2);
+    exclusionTiles.initialize<int2>(context, exclusionTilesVec.size(), "exclusionTiles");
     exclusionTiles.upload(exclusionTilesVec);
     map<pair<int, int>, int> exclusionTileMap;
     for (int i = 0; i < (int) exclusionTilesVec.size(); i++) {
-        ushort2 tile = exclusionTilesVec[i];
+        int2 tile = exclusionTilesVec[i];
         exclusionTileMap[make_pair(tile.x, tile.y)] = i;
     }
     vector<vector<int> > exclusionBlocksForBlock(numAtomBlocks);
@@ -241,6 +244,7 @@ void CudaNonbondedUtilities::initialize(const System& system) {
 
     // Create data structures for the neighbor list.
 
+    maxCutoff = getMaxCutoffDistance();
     if (useCutoff) {
         // Select a size for the arrays that hold the neighbor list.  We have to make a fairly
         // arbitrary guess, but if this turns out to be too small we'll increase it later.
@@ -258,12 +262,16 @@ void CudaNonbondedUtilities::initialize(const System& system) {
         int elementSize = (context.getUseDoublePrecision() ? sizeof(double) : sizeof(float));
         blockCenter.initialize(context, numAtomBlocks, 4*elementSize, "blockCenter");
         blockBoundingBox.initialize(context, numAtomBlocks, 4*elementSize, "blockBoundingBox");
-        sortedBlocks.initialize(context, numAtomBlocks, 2*elementSize, "sortedBlocks");
+        sortedBlocks.initialize<unsigned int>(context, numAtomBlocks, "sortedBlocks");
         sortedBlockCenter.initialize(context, numAtomBlocks+1, 4*elementSize, "sortedBlockCenter");
         sortedBlockBoundingBox.initialize(context, numAtomBlocks+1, 4*elementSize, "sortedBlockBoundingBox");
+        numBlockSizes = min((context.getNumAtomBlocks()+63)/64, context.getNumThreadBlocks());
+        blockSizeRange.initialize(context, numBlockSizes, 2*elementSize, "blockSizeRange");
+        largeBlockCenter.initialize(context, numAtomBlocks, 4*elementSize, "largeBlockCenter");
+        largeBlockBoundingBox.initialize(context, numAtomBlocks, 4*elementSize, "largeBlockBoundingBox");
         oldPositions.initialize(context, numAtoms, 4*elementSize, "oldPositions");
         rebuildNeighborList.initialize<int>(context, 1, "rebuildNeighborList");
-        blockSorter = new CudaSort(context, new BlockSortTrait(context.getUseDoublePrecision()), numAtomBlocks);
+        blockSorter = context.createSort(new BlockSortTrait(), numAtomBlocks, false);
         vector<unsigned int> count(2, 0);
         interactionCount.upload(count);
         rebuildNeighborList.upload(&count[0]);
@@ -271,9 +279,9 @@ void CudaNonbondedUtilities::initialize(const System& system) {
 
     // Record arguments for kernels.
 
-    forceArgs.push_back(&context.getForce().getDevicePointer());
-    forceArgs.push_back(&context.getEnergyBuffer().getDevicePointer());
-    forceArgs.push_back(&context.getPosq().getDevicePointer());
+    forceArgs.push_back(&context.unwrap(context.getLongForceBuffer()).getDevicePointer());
+    forceArgs.push_back(&context.unwrap(context.getEnergyBuffer()).getDevicePointer());
+    forceArgs.push_back(&context.unwrap(context.getPosq()).getDevicePointer());
     forceArgs.push_back(&exclusions.getDevicePointer());
     forceArgs.push_back(&exclusionTiles.getDevicePointer());
     forceArgs.push_back(&startTileIndex);
@@ -293,12 +301,12 @@ void CudaNonbondedUtilities::initialize(const System& system) {
         forceArgs.push_back(&maxSinglePairs);
         forceArgs.push_back(&singlePairs.getDevicePointer());
     }
-    for (int i = 0; i < (int) parameters.size(); i++)
-        forceArgs.push_back(&parameters[i].getMemory());
-    for (int i = 0; i < (int) arguments.size(); i++)
-        forceArgs.push_back(&arguments[i].getMemory());
+    hasInitializedParams = false;
+    paramStartIndex = forceArgs.size();
+    for (int i = 0; i < parameters.size()+arguments.size(); i++)
+        forceArgs.push_back(NULL);
     if (energyParameterDerivatives.size() > 0)
-        forceArgs.push_back(&context.getEnergyParamDerivBuffer().getDevicePointer());
+        forceArgs.push_back(&context.unwrap(context.getEnergyParamDerivBuffer()).getDevicePointer());
     if (useCutoff) {
         findBlockBoundsArgs.push_back(&numAtoms);
         findBlockBoundsArgs.push_back(context.getPeriodicBoxSizePointer());
@@ -306,17 +314,30 @@ void CudaNonbondedUtilities::initialize(const System& system) {
         findBlockBoundsArgs.push_back(context.getPeriodicBoxVecXPointer());
         findBlockBoundsArgs.push_back(context.getPeriodicBoxVecYPointer());
         findBlockBoundsArgs.push_back(context.getPeriodicBoxVecZPointer());
-        findBlockBoundsArgs.push_back(&context.getPosq().getDevicePointer());
+        findBlockBoundsArgs.push_back(&context.unwrap(context.getPosq()).getDevicePointer());
         findBlockBoundsArgs.push_back(&blockCenter.getDevicePointer());
         findBlockBoundsArgs.push_back(&blockBoundingBox.getDevicePointer());
         findBlockBoundsArgs.push_back(&rebuildNeighborList.getDevicePointer());
-        findBlockBoundsArgs.push_back(&sortedBlocks.getDevicePointer());
+        findBlockBoundsArgs.push_back(&blockSizeRange.getDevicePointer());
+        computeSortKeysArgs.push_back(&blockBoundingBox.getDevicePointer());
+        computeSortKeysArgs.push_back(&sortedBlocks.getDevicePointer());
+        computeSortKeysArgs.push_back(&blockSizeRange.getDevicePointer());
+        computeSortKeysArgs.push_back(&numBlockSizes);
         sortBoxDataArgs.push_back(&sortedBlocks.getDevicePointer());
         sortBoxDataArgs.push_back(&blockCenter.getDevicePointer());
         sortBoxDataArgs.push_back(&blockBoundingBox.getDevicePointer());
         sortBoxDataArgs.push_back(&sortedBlockCenter.getDevicePointer());
         sortBoxDataArgs.push_back(&sortedBlockBoundingBox.getDevicePointer());
-        sortBoxDataArgs.push_back(&context.getPosq().getDevicePointer());
+        if (useLargeBlocks) {
+            sortBoxDataArgs.push_back(&largeBlockCenter.getDevicePointer());
+            sortBoxDataArgs.push_back(&largeBlockBoundingBox.getDevicePointer());
+            sortBoxDataArgs.push_back(context.getPeriodicBoxSizePointer());
+            sortBoxDataArgs.push_back(context.getInvPeriodicBoxSizePointer());
+            sortBoxDataArgs.push_back(context.getPeriodicBoxVecXPointer());
+            sortBoxDataArgs.push_back(context.getPeriodicBoxVecYPointer());
+            sortBoxDataArgs.push_back(context.getPeriodicBoxVecZPointer());
+        }
+        sortBoxDataArgs.push_back(&context.unwrap(context.getPosq()).getDevicePointer());
         sortBoxDataArgs.push_back(&oldPositions.getDevicePointer());
         sortBoxDataArgs.push_back(&interactionCount.getDevicePointer());
         sortBoxDataArgs.push_back(&rebuildNeighborList.getDevicePointer());
@@ -330,7 +351,7 @@ void CudaNonbondedUtilities::initialize(const System& system) {
         findInteractingBlocksArgs.push_back(&interactingTiles.getDevicePointer());
         findInteractingBlocksArgs.push_back(&interactingAtoms.getDevicePointer());
         findInteractingBlocksArgs.push_back(&singlePairs.getDevicePointer());
-        findInteractingBlocksArgs.push_back(&context.getPosq().getDevicePointer());
+        findInteractingBlocksArgs.push_back(&context.unwrap(context.getPosq()).getDevicePointer());
         findInteractingBlocksArgs.push_back(&maxTiles);
         findInteractingBlocksArgs.push_back(&maxSinglePairs);
         findInteractingBlocksArgs.push_back(&startBlockIndex);
@@ -338,6 +359,10 @@ void CudaNonbondedUtilities::initialize(const System& system) {
         findInteractingBlocksArgs.push_back(&sortedBlocks.getDevicePointer());
         findInteractingBlocksArgs.push_back(&sortedBlockCenter.getDevicePointer());
         findInteractingBlocksArgs.push_back(&sortedBlockBoundingBox.getDevicePointer());
+        if (useLargeBlocks) {
+            findInteractingBlocksArgs.push_back(&largeBlockCenter.getDevicePointer());
+            findInteractingBlocksArgs.push_back(&largeBlockBoundingBox.getDevicePointer());
+        }
         findInteractingBlocksArgs.push_back(&exclusionIndices.getDevicePointer());
         findInteractingBlocksArgs.push_back(&exclusionRowIndices.getDevicePointer());
         findInteractingBlocksArgs.push_back(&oldPositions.getDevicePointer());
@@ -353,7 +378,7 @@ double CudaNonbondedUtilities::getMaxCutoffDistance() {
 }
 
 double CudaNonbondedUtilities::padCutoff(double cutoff) {
-    double padding = (usePadding ? 0.1*cutoff : 0.0);
+    double padding = (usePadding ? 0.08*cutoff : 0.0);
     return cutoff+padding;
 }
 
@@ -362,43 +387,52 @@ void CudaNonbondedUtilities::prepareInteractions(int forceGroups) {
         return;
     if (groupKernels.find(forceGroups) == groupKernels.end())
         createKernelsForGroups(forceGroups);
-    if (!useCutoff)
-        return;
-    if (numTiles == 0)
-        return;
     KernelSet& kernels = groupKernels[forceGroups];
-    if (usePeriodic) {
+    if (useCutoff && usePeriodic) {
         double4 box = context.getPeriodicBoxSize();
-        double minAllowedSize = 1.999999*kernels.cutoffDistance;
+        double minAllowedSize = 1.999999*maxCutoff;
         if (box.x < minAllowedSize || box.y < minAllowedSize || box.z < minAllowedSize)
             throw OpenMMException("The periodic box size has decreased to less than twice the nonbonded cutoff.");
     }
+    if (!useNeighborList)
+        return;
+    if (numBlocks == 0)
+        return;
 
     // Compute the neighbor list.
 
-    if (lastCutoff != kernels.cutoffDistance)
-        forceRebuildNeighborList = true;
-    context.executeKernel(kernels.findBlockBoundsKernel, &findBlockBoundsArgs[0], context.getNumAtoms());
+    context.executeKernel(kernels.findBlockBoundsKernel, &findBlockBoundsArgs[0], context.getNumAtomBlocks());
+    context.executeKernel(kernels.computeSortKeysKernel, &computeSortKeysArgs[0], context.getNumAtomBlocks());
     blockSorter->sort(sortedBlocks);
     context.executeKernel(kernels.sortBoxDataKernel, &sortBoxDataArgs[0], context.getNumAtoms());
     context.executeKernel(kernels.findInteractingBlocksKernel, &findInteractingBlocksArgs[0], context.getNumAtoms(), 256);
     forceRebuildNeighborList = false;
-    lastCutoff = kernels.cutoffDistance;
     interactionCount.download(pinnedCountBuffer, false);
     cuEventRecord(downloadCountEvent, context.getCurrentStream());
+}
+
+void CudaNonbondedUtilities::initParamArgs() {
+    int index = paramStartIndex;
+    for (ComputeParameterInfo& param : parameters)
+        forceArgs[index++] = &context.unwrap(param.getArray()).getDevicePointer();
+    for (ComputeParameterInfo& arg : arguments)
+        forceArgs[index++] = &context.unwrap(arg.getArray()).getDevicePointer();
+    hasInitializedParams = true;
 }
 
 void CudaNonbondedUtilities::computeInteractions(int forceGroups, bool includeForces, bool includeEnergy) {
     if ((forceGroups&groupFlags) == 0)
         return;
     KernelSet& kernels = groupKernels[forceGroups];
-    if (kernels.hasForces) {
+    if (kernels.hasForces && (includeForces || includeEnergy)) {
         CUfunction& kernel = (includeForces ? (includeEnergy ? kernels.forceEnergyKernel : kernels.forceKernel) : kernels.energyKernel);
         if (kernel == NULL)
             kernel = createInteractionKernel(kernels.source, parameters, arguments, true, true, forceGroups, includeForces, includeEnergy);
+        if (!hasInitializedParams)
+            initParamArgs();
         context.executeKernel(kernel, &forceArgs[0], numForceThreadBlocks*forceThreadBlockSize, forceThreadBlockSize);
     }
-    if (useCutoff && numTiles > 0) {
+    if (useNeighborList && numBlocks > 0) {
         cuEventSynchronize(downloadCountEvent);
         updateNeighborListSize();
     }
@@ -407,6 +441,12 @@ void CudaNonbondedUtilities::computeInteractions(int forceGroups, bool includeFo
 bool CudaNonbondedUtilities::updateNeighborListSize() {
     if (!useCutoff)
         return false;
+    if (context.getStepsSinceReorder() == 0 || tilesAfterReorder == 0) {
+        tilesAfterReorder = pinnedCountBuffer[0];
+		singlePairsAfterReorder = pinnedCountBuffer[1];
+    }
+    else if (context.getStepsSinceReorder() > 25 && (pinnedCountBuffer[0] > 1.1*tilesAfterReorder || pinnedCountBuffer[1] > 2.0*singlePairsAfterReorder))
+        context.forceReorder();
     if (pinnedCountBuffer[0] <= maxTiles && pinnedCountBuffer[1] <= maxSinglePairs)
         return false;
 
@@ -414,12 +454,13 @@ bool CudaNonbondedUtilities::updateNeighborListSize() {
     // this from happening in the future.
 
     if (pinnedCountBuffer[0] > maxTiles) {
-        maxTiles = (int) (1.2*pinnedCountBuffer[0]);
-        int totalTiles = context.getNumAtomBlocks()*(context.getNumAtomBlocks()+1)/2;
+        maxTiles = (unsigned int) (1.2*pinnedCountBuffer[0]);
+        unsigned int numBlocks = context.getNumAtomBlocks();
+        int totalTiles = numBlocks*(numBlocks+1)/2;
         if (maxTiles > totalTiles)
             maxTiles = totalTiles;
         interactingTiles.resize(maxTiles);
-        interactingAtoms.resize(CudaContext::TileSize*maxTiles);
+        interactingAtoms.resize(CudaContext::TileSize*(size_t) maxTiles);
         if (forceArgs.size() > 0)
             forceArgs[7] = &interactingTiles.getDevicePointer();
         findInteractingBlocksArgs[6] = &interactingTiles.getDevicePointer();
@@ -428,7 +469,7 @@ bool CudaNonbondedUtilities::updateNeighborListSize() {
         findInteractingBlocksArgs[7] = &interactingAtoms.getDevicePointer();
     }
     if (pinnedCountBuffer[1] > maxSinglePairs) {
-        maxSinglePairs = (int) (1.2*pinnedCountBuffer[1]);
+        maxSinglePairs = (unsigned int) (1.2*pinnedCountBuffer[1]);
         singlePairs.resize(maxSinglePairs);
         if (forceArgs.size() > 0)
             forceArgs[19] = &singlePairs.getDevicePointer();
@@ -436,6 +477,7 @@ bool CudaNonbondedUtilities::updateNeighborListSize() {
     }
     forceRebuildNeighborList = true;
     context.setForcesValid(false);
+    context.reorderAtoms();
     return true;
 }
 
@@ -447,33 +489,34 @@ void CudaNonbondedUtilities::setAtomBlockRange(double startFraction, double endF
     int numAtomBlocks = context.getNumAtomBlocks();
     startBlockIndex = (int) (startFraction*numAtomBlocks);
     numBlocks = (int) (endFraction*numAtomBlocks)-startBlockIndex;
-    int totalTiles = context.getNumAtomBlocks()*(context.getNumAtomBlocks()+1)/2;
+    long long totalTiles = context.getNumAtomBlocks()*((long long)context.getNumAtomBlocks()+1)/2;
     startTileIndex = (int) (startFraction*totalTiles);
-    numTiles = (int) (endFraction*totalTiles)-startTileIndex;
+    numTiles = (long long) (endFraction*totalTiles)-startTileIndex;
     forceRebuildNeighborList = true;
+    if (numBlocks == 0 && interactionCount.isInitialized()) {
+        vector<unsigned int> count(2, 0);
+        interactionCount.upload(count);
+    }
 }
 
 void CudaNonbondedUtilities::createKernelsForGroups(int groups) {
     KernelSet kernels;
-    double cutoff = 0.0;
     string source;
     for (int i = 0; i < 32; i++) {
         if ((groups&(1<<i)) != 0) {
-            cutoff = max(cutoff, groupCutoff[i]);
             source += groupKernelSource[i];
         }
     }
     kernels.hasForces = (source.size() > 0);
-    kernels.cutoffDistance = cutoff;
     kernels.source = source;
     kernels.forceKernel = kernels.energyKernel = kernels.forceEnergyKernel = NULL;
     if (useCutoff) {
-        double paddedCutoff = padCutoff(cutoff);
+        double paddedCutoff = padCutoff(maxCutoff);
         map<string, string> defines;
         defines["TILE_SIZE"] = context.intToString(CudaContext::TileSize);
         defines["NUM_BLOCKS"] = context.intToString(context.getNumAtomBlocks());
         defines["NUM_ATOMS"] = context.intToString(context.getNumAtoms());
-        defines["PADDING"] = context.doubleToString(paddedCutoff-cutoff);
+        defines["PADDING"] = context.doubleToString(paddedCutoff-maxCutoff);
         defines["PADDED_CUTOFF"] = context.doubleToString(paddedCutoff);
         defines["PADDED_CUTOFF_SQUARED"] = context.doubleToString(paddedCutoff*paddedCutoff);
         defines["NUM_TILES_WITH_EXCLUSIONS"] = context.intToString(exclusionTiles.getSize());
@@ -481,156 +524,121 @@ void CudaNonbondedUtilities::createKernelsForGroups(int groups) {
             defines["USE_PERIODIC"] = "1";
         if (context.getBoxIsTriclinic())
             defines["TRICLINIC"] = "1";
+        if (useLargeBlocks)
+            defines["USE_LARGE_BLOCKS"] = "1";
         defines["MAX_EXCLUSIONS"] = context.intToString(maxExclusions);
-        // Temporarily disable the pair list until we figure out why it's failing on some GPUs.
-        defines["MAX_BITS_FOR_PAIRS"] = "0";//(canUsePairList ? "2" : "0");
+        defines["MAX_BITS_FOR_PAIRS"] = (canUsePairList ? (context.getComputeCapability() < 8.0 ? "2" : "3") : "0");
+        int binShift = 1;
+        while (1<<binShift <= context.getNumAtomBlocks())
+            binShift++;
+        defines["BIN_SHIFT"] = context.intToString(binShift);
+        defines["BLOCK_INDEX_MASK"] = context.intToString((1<<binShift)-1);
         CUmodule interactingBlocksProgram = context.createModule(CudaKernelSources::vectorOps+CudaKernelSources::findInteractingBlocks, defines);
         kernels.findBlockBoundsKernel = context.getKernel(interactingBlocksProgram, "findBlockBounds");
+        kernels.computeSortKeysKernel = context.getKernel(interactingBlocksProgram, "computeSortKeys");
         kernels.sortBoxDataKernel = context.getKernel(interactingBlocksProgram, "sortBoxData");
         kernels.findInteractingBlocksKernel = context.getKernel(interactingBlocksProgram, "findBlocksWithInteractions");
     }
     groupKernels[groups] = kernels;
 }
 
-CUfunction CudaNonbondedUtilities::createInteractionKernel(const string& source, vector<ParameterInfo>& params, vector<ParameterInfo>& arguments, bool useExclusions, bool isSymmetric, int groups, bool includeForces, bool includeEnergy) {
+CUfunction CudaNonbondedUtilities::createInteractionKernel(const string& source, vector<ComputeParameterInfo>& params, vector<ComputeParameterInfo>& arguments, bool useExclusions, bool isSymmetric, int groups, bool includeForces, bool includeEnergy) {
     map<string, string> replacements;
     replacements["COMPUTE_INTERACTION"] = source;
     const string suffixes[] = {"x", "y", "z", "w"};
     stringstream localData;
     int localDataSize = 0;
-    for (int i = 0; i < (int) params.size(); i++) {
-        if (params[i].getNumComponents() == 1)
-            localData<<params[i].getType()<<" "<<params[i].getName()<<";\n";
+    for (const ComputeParameterInfo& param : params) {
+        if (param.getNumComponents() == 1)
+            localData<<param.getType()<<" "<<param.getName()<<";\n";
         else {
-            for (int j = 0; j < params[i].getNumComponents(); ++j)
-                localData<<params[i].getComponentType()<<" "<<params[i].getName()<<"_"<<suffixes[j]<<";\n";
+            for (int j = 0; j < param.getNumComponents(); ++j)
+                localData<<param.getComponentType()<<" "<<param.getName()<<"_"<<suffixes[j]<<";\n";
         }
-        localDataSize += params[i].getSize();
+        localDataSize += param.getSize();
     }
     replacements["ATOM_PARAMETER_DATA"] = localData.str();
     stringstream args;
-    for (int i = 0; i < (int) params.size(); i++) {
-        args << ", const ";
-        args << params[i].getType();
+    for (const ComputeParameterInfo& param : params) {
+        args << ", ";
+        if (param.isConstant())
+            args << "const ";
+        args << param.getType();
         args << "* __restrict__ global_";
-        args << params[i].getName();
+        args << param.getName();
     }
-    for (int i = 0; i < (int) arguments.size(); i++) {
-        args << ", const ";
-        args << arguments[i].getType();
+    for (const ComputeParameterInfo& arg : arguments) {
+        args << ", ";
+        if (arg.isConstant())
+            args << "const ";
+        args << arg.getType();
         args << "* __restrict__ ";
-        args << arguments[i].getName();
+        args << arg.getName();
     }
     if (energyParameterDerivatives.size() > 0)
         args << ", mixed* __restrict__ energyParamDerivs";
     replacements["PARAMETER_ARGUMENTS"] = args.str();
 
     stringstream load1;
-    for (int i = 0; i < (int) params.size(); i++) {
-        load1 << params[i].getType();
+    for (const ComputeParameterInfo& param : params) {
+        load1 << param.getType();
         load1 << " ";
-        load1 << params[i].getName();
+        load1 << param.getName();
         load1 << "1 = global_";
-        load1 << params[i].getName();
+        load1 << param.getName();
         load1 << "[atom1];\n";
     }
     replacements["LOAD_ATOM1_PARAMETERS"] = load1.str();
 
-    int cudaVersion;
-    cuDriverGetVersion(&cudaVersion);
-    bool useShuffle = (context.getComputeCapability() >= 3.0 && cudaVersion >= 5050);
-
     // Part 1. Defines for on diagonal exclusion tiles
-    stringstream loadLocal1;
-    if(useShuffle) {
-        // not needed if using shuffles as we can directly fetch from register
-    } else {
-        for (int i = 0; i < (int) params.size(); i++) {
-            if (params[i].getNumComponents() == 1) {
-                loadLocal1<<"localData[threadIdx.x]."<<params[i].getName()<<" = "<<params[i].getName()<<"1;\n";
-            }
-            else {
-                for (int j = 0; j < params[i].getNumComponents(); ++j)
-                    loadLocal1<<"localData[threadIdx.x]."<<params[i].getName()<<"_"<<suffixes[j]<<" = "<<params[i].getName()<<"1."<<suffixes[j]<<";\n";
-            }
-        }
-    }
-    replacements["LOAD_LOCAL_PARAMETERS_FROM_1"] = loadLocal1.str();
 
     stringstream broadcastWarpData;
-    if(useShuffle) {
-        broadcastWarpData << "posq2.x = real_shfl(shflPosq.x, j);\n";
-        broadcastWarpData << "posq2.y = real_shfl(shflPosq.y, j);\n";
-        broadcastWarpData << "posq2.z = real_shfl(shflPosq.z, j);\n";
-        broadcastWarpData << "posq2.w = real_shfl(shflPosq.w, j);\n";
-        for(int i=0; i< (int) params.size();i++) {
-            broadcastWarpData << params[i].getType() << " shfl" << params[i].getName() << ";\n";
-            for(int j=0; j < params[i].getNumComponents(); j++) {
-                string name;
-                if (params[i].getNumComponents() == 1) {
-                    broadcastWarpData << "shfl" << params[i].getName() << "=real_shfl(" << params[i].getName() <<"1,j);\n";
-
-                } else {
-                    broadcastWarpData << "shfl" << params[i].getName()+"."+suffixes[j] << "=real_shfl(" << params[i].getName()+"1."+suffixes[j] <<",j);\n";
-                }
-            }
+    broadcastWarpData << "posq2.x = real_shfl(shflPosq.x, j);\n";
+    broadcastWarpData << "posq2.y = real_shfl(shflPosq.y, j);\n";
+    broadcastWarpData << "posq2.z = real_shfl(shflPosq.z, j);\n";
+    broadcastWarpData << "posq2.w = real_shfl(shflPosq.w, j);\n";
+    for (const ComputeParameterInfo& param : params) {
+        broadcastWarpData << param.getType() << " shfl" << param.getName() << ";\n";
+        for (int j = 0; j < param.getNumComponents(); j++) {
+            if (param.getNumComponents() == 1)
+                broadcastWarpData << "shfl" << param.getName() << "=real_shfl(" << param.getName() <<"1,j);\n";
+            else
+                broadcastWarpData << "shfl" << param.getName()+"."+suffixes[j] << "=real_shfl(" << param.getName()+"1."+suffixes[j] <<",j);\n";
         }
-    } else {
-        // not used if not shuffling
     }
     replacements["BROADCAST_WARP_DATA"] = broadcastWarpData.str();
     
     // Part 2. Defines for off-diagonal exclusions, and neighborlist tiles. 
     stringstream declareLocal2;
-    if(useShuffle) {
-        for(int i=0; i< (int) params.size(); i++) {
-            declareLocal2<<params[i].getType()<<" shfl"<<params[i].getName()<<";\n";
-        }
-    } else {
-        // not used if using shared memory
-    }
+    for (const ComputeParameterInfo& param : params)
+        declareLocal2<<param.getType()<<" shfl"<<param.getName()<<";\n";
     replacements["DECLARE_LOCAL_PARAMETERS"] = declareLocal2.str();
 
     stringstream loadLocal2;
-    if(useShuffle) {
-        for(int i=0; i< (int) params.size(); i++) {
-            loadLocal2<<"shfl"<<params[i].getName()<<" = global_"<<params[i].getName()<<"[j];\n";
-        }
-    } else {
-        for (int i = 0; i < (int) params.size(); i++) {
-            if (params[i].getNumComponents() == 1) {
-                loadLocal2<<"localData[threadIdx.x]."<<params[i].getName()<<" = global_"<<params[i].getName()<<"[j];\n";
-            }
-            else {
-                loadLocal2<<params[i].getType()<<" temp_"<<params[i].getName()<<" = global_"<<params[i].getName()<<"[j];\n";
-                for (int j = 0; j < params[i].getNumComponents(); ++j)
-                    loadLocal2<<"localData[threadIdx.x]."<<params[i].getName()<<"_"<<suffixes[j]<<" = temp_"<<params[i].getName()<<"."<<suffixes[j]<<";\n";
-            }
-        }
-    }
+    for (const ComputeParameterInfo& param : params)
+        loadLocal2<<"shfl"<<param.getName()<<" = global_"<<param.getName()<<"[j];\n";
     replacements["LOAD_LOCAL_PARAMETERS_FROM_GLOBAL"] = loadLocal2.str();
    
     stringstream load2j;
-    if(useShuffle) {
-        for(int i = 0; i < (int) params.size(); i++)
-            load2j<<params[i].getType()<<" "<<params[i].getName()<<"2 = shfl"<<params[i].getName()<<";\n";
-    } else {
-        for (int i = 0; i < (int) params.size(); i++) {
-            if (params[i].getNumComponents() == 1) {
-                load2j<<params[i].getType()<<" "<<params[i].getName()<<"2 = localData[atom2]."<<params[i].getName()<<";\n";
-            }
-            else {
-                load2j<<params[i].getType()<<" "<<params[i].getName()<<"2 = make_"<<params[i].getType()<<"(";
-                for (int j = 0; j < params[i].getNumComponents(); ++j) {
-                    if (j > 0)
-                        load2j<<", ";
-                    load2j<<"localData[atom2]."<<params[i].getName()<<"_"<<suffixes[j];
-                }
-                load2j<<");\n";
-            }
-        }
-    }
+    for (const ComputeParameterInfo& param : params)
+        load2j<<param.getType()<<" "<<param.getName()<<"2 = shfl"<<param.getName()<<";\n";
     replacements["LOAD_ATOM2_PARAMETERS"] = load2j.str();
+
+    stringstream load2g;
+    for (const ComputeParameterInfo& param : params)
+        load2g<<param.getType()<<" "<<param.getName()<<"2 = global_"<<param.getName()<<"[atom2];\n";
+    replacements["LOAD_ATOM2_PARAMETERS_FROM_GLOBAL"] = load2g.str();
+    
+    stringstream clearLocal;
+    for (const ComputeParameterInfo& param : params) {
+        clearLocal<<"shfl"<<param.getName()<<" = ";
+        if (param.getNumComponents() == 1)
+            clearLocal<<"0;\n";
+        else
+            clearLocal<<"make_"<<param.getType()<<"(0);\n";
+    }
+    replacements["CLEAR_LOCAL_PARAMETERS"] = clearLocal.str();
+
     stringstream initDerivs;
     for (int i = 0; i < energyParameterDerivatives.size(); i++)
         initDerivs<<"mixed energyParamDeriv"<<i<<" = 0;\n";
@@ -641,33 +649,29 @@ CUfunction CudaNonbondedUtilities::createInteractionKernel(const string& source,
     for (int i = 0; i < energyParameterDerivatives.size(); i++)
         for (int index = 0; index < numDerivs; index++)
             if (allParamDerivNames[index] == energyParameterDerivatives[i])
-                saveDerivs<<"energyParamDerivs[(blockIdx.x*blockDim.x+threadIdx.x)*"<<numDerivs<<"+"<<index<<"] += energyParamDeriv"<<i<<";\n";
+                saveDerivs<<"energyParamDerivs[GLOBAL_ID*"<<numDerivs<<"+"<<index<<"] += energyParamDeriv"<<i<<";\n";
     replacements["SAVE_DERIVATIVES"] = saveDerivs.str();
 
     stringstream shuffleWarpData;
-    if(useShuffle) {
-        shuffleWarpData << "shflPosq.x = real_shfl(shflPosq.x, tgx+1);\n";
-        shuffleWarpData << "shflPosq.y = real_shfl(shflPosq.y, tgx+1);\n";
-        shuffleWarpData << "shflPosq.z = real_shfl(shflPosq.z, tgx+1);\n";
-        shuffleWarpData << "shflPosq.w = real_shfl(shflPosq.w, tgx+1);\n";
-        shuffleWarpData << "shflForce.x = real_shfl(shflForce.x, tgx+1);\n";
-        shuffleWarpData << "shflForce.y = real_shfl(shflForce.y, tgx+1);\n";
-        shuffleWarpData << "shflForce.z = real_shfl(shflForce.z, tgx+1);\n";
-        for(int i=0; i < (int) params.size(); i++) {
-            if(params[i].getNumComponents() == 1) {
-                shuffleWarpData<<"shfl"<<params[i].getName()<<"=real_shfl(shfl"<<params[i].getName()<<", tgx+1);\n";
-            } else {
-                for(int j=0;j<params[i].getNumComponents();j++) {
-                    // looks something like shflsigmaEpsilon.x = real_shfl(shflsigmaEpsilon.x,tgx+1);
-                    shuffleWarpData<<"shfl"<<params[i].getName()
-                        <<"."<<suffixes[j]<<"=real_shfl(shfl"
-                        <<params[i].getName()<<"."<<suffixes[j]
-                        <<", tgx+1);\n";
-                }
+    shuffleWarpData << "shflPosq.x = real_shfl(shflPosq.x, tgx+1);\n";
+    shuffleWarpData << "shflPosq.y = real_shfl(shflPosq.y, tgx+1);\n";
+    shuffleWarpData << "shflPosq.z = real_shfl(shflPosq.z, tgx+1);\n";
+    shuffleWarpData << "shflPosq.w = real_shfl(shflPosq.w, tgx+1);\n";
+    shuffleWarpData << "shflForce.x = real_shfl(shflForce.x, tgx+1);\n";
+    shuffleWarpData << "shflForce.y = real_shfl(shflForce.y, tgx+1);\n";
+    shuffleWarpData << "shflForce.z = real_shfl(shflForce.z, tgx+1);\n";
+    for (const ComputeParameterInfo& param : params) {
+        if (param.getNumComponents() == 1)
+            shuffleWarpData<<"shfl"<<param.getName()<<"=real_shfl(shfl"<<param.getName()<<", tgx+1);\n";
+        else {
+            for (int j = 0; j < param.getNumComponents(); j++) {
+                // looks something like shflsigmaEpsilon.x = real_shfl(shflsigmaEpsilon.x,tgx+1);
+                shuffleWarpData<<"shfl"<<param.getName()
+                    <<"."<<suffixes[j]<<"=real_shfl(shfl"
+                    <<param.getName()<<"."<<suffixes[j]
+                    <<", tgx+1);\n";
             }
         }
-    } else {
-        // not used otherwise
     }
     replacements["SHUFFLE_WARP_DATA"] = shuffleWarpData.str();
 
@@ -680,8 +684,9 @@ CUfunction CudaNonbondedUtilities::createInteractionKernel(const string& source,
         defines["USE_EXCLUSIONS"] = "1";
     if (isSymmetric)
         defines["USE_SYMMETRIC"] = "1";
-    if (useShuffle)
-        defines["ENABLE_SHUFFLE"] = "1";
+    if (useNeighborList)
+        defines["USE_NEIGHBOR_LIST"] = "1";
+    defines["ENABLE_SHUFFLE"] = "1";
     if (includeForces)
         defines["INCLUDE_FORCES"] = "1";
     if (includeEnergy)
@@ -710,7 +715,11 @@ CUfunction CudaNonbondedUtilities::createInteractionKernel(const string& source,
     defines["LAST_EXCLUSION_TILE"] = context.intToString(endExclusionIndex);
     if ((localDataSize/4)%2 == 0 && !context.getUseDoublePrecision())
         defines["PARAMETER_SIZE_IS_EVEN"] = "1";
-    CUmodule program = context.createModule(CudaKernelSources::vectorOps+context.replaceStrings(CudaKernelSources::nonbonded, replacements), defines);
+    CUmodule program = context.createModule(CudaKernelSources::vectorOps+context.replaceStrings(kernelSource, replacements), defines);
     CUfunction kernel = context.getKernel(program, "computeNonbonded");
     return kernel;
+}
+
+void CudaNonbondedUtilities::setKernelSource(const string& source) {
+    kernelSource = source;
 }

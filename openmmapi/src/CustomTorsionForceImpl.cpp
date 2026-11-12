@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -44,6 +42,7 @@ using std::string;
 using std::stringstream;
 
 CustomTorsionForceImpl::CustomTorsionForceImpl(const CustomTorsionForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomTorsionForceImpl::~CustomTorsionForceImpl() {
@@ -58,31 +57,15 @@ void CustomTorsionForceImpl::initialize(ContextImpl& context) {
     vector<double> parameters;
     int numParameters = owner.getNumPerTorsionParameters();
     for (int i = 0; i < owner.getNumTorsions(); i++) {
-        int particle1, particle2, particle3, particle4;
-        owner.getTorsionParameters(i, particle1, particle2, particle3, particle4, parameters);
-        if (particle1 < 0 || particle1 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomTorsionForce: Illegal particle index for an torsion: ";
-            msg << particle1;
-            throw OpenMMException(msg.str());
-        }
-        if (particle2 < 0 || particle2 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomTorsionForce: Illegal particle index for an torsion: ";
-            msg << particle2;
-            throw OpenMMException(msg.str());
-        }
-        if (particle3 < 0 || particle3 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomTorsionForce: Illegal particle index for an torsion: ";
-            msg << particle3;
-            throw OpenMMException(msg.str());
-        }
-        if (particle4 < 0 || particle4 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomTorsionForce: Illegal particle index for an torsion: ";
-            msg << particle4;
-            throw OpenMMException(msg.str());
+        int particle[4];
+        owner.getTorsionParameters(i, particle[0], particle[1], particle[2], particle[3], parameters);
+        for (int j = 0; j < 4; j++) {
+            if (particle[j] < 0 || particle[j] >= system.getNumParticles()) {
+                stringstream msg;
+                msg << "CustomTorsionForce: Illegal particle index for a torsion: ";
+                msg << particle[j];
+                throw OpenMMException(msg.str());
+            }
         }
         if (parameters.size() != numParameters) {
             stringstream msg;
@@ -95,15 +78,13 @@ void CustomTorsionForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomTorsionForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomTorsionForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> CustomTorsionForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcCustomTorsionForceKernel::Name());
-    return names;
+    return {CalcCustomTorsionForceKernel::Name()};
 }
 
 map<string, double> CustomTorsionForceImpl::getDefaultParameters() {
@@ -113,7 +94,7 @@ map<string, double> CustomTorsionForceImpl::getDefaultParameters() {
     return parameters;
 }
 
-void CustomTorsionForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcCustomTorsionForceKernel>().copyParametersToContext(context, owner);
+void CustomTorsionForceImpl::updateParametersInContext(ContextImpl& context, int firstTorsion, int lastTorsion) {
+    kernel.getAs<CalcCustomTorsionForceKernel>().copyParametersToContext(context, owner, firstTorsion, lastTorsion);
     context.systemChanged();
 }

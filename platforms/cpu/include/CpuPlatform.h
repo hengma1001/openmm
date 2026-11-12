@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -89,16 +87,29 @@ private:
 
 class CpuPlatform::PlatformData {
 public:
-    PlatformData(int numParticles, int numThreads, bool deterministicForces);
+    PlatformData(int numParticles, ThreadPool& threads, bool deterministicForces);
     ~PlatformData();
+    /**
+     * Request that a neighbor list be built and maintained.
+     * 
+     * @param cutoffDistance  the cutoff distance for particle pairs to be included in the neighbor list.
+     *                        If this is 0, a dense neighbor list is built that includes all particle pairs
+     *                        regardless of distance.
+     * @param padding         a padding distance that should be added to the cutoff so the neighbor list
+     *                        does not need to be rebuilt every step
+     * @param useExclusions   whether to omit specific excluded interactions
+     * @param exclusionList   if useExclusions is true, exclusionList[i] should contain the indices of all
+     *                        particles with which particle i should not interact
+     */
     void requestNeighborList(double cutoffDistance, double padding, bool useExclusions, const std::vector<std::set<int> >& exclusionList);
     int requestPosqIndex();
     AlignedArray<float> posq;
     std::vector<AlignedArray<float> > threadForce;
-    ThreadPool threads;
+    ThreadPool& threads;
     bool isPeriodic;
     CpuRandom random;
     std::map<std::string, std::string> propertyValues;
+    int numParticles;
     CpuNeighborList* neighborList;
     double cutoff, paddedCutoff;
     bool anyExclusions, deterministicForces;

@@ -588,7 +588,7 @@ INPUT_ENCODING         = UTF-8
 # *.c *.cc *.cxx *.cpp *.c++ *.java *.ii *.ixx *.ipp *.i++ *.inl *.h *.hh *.hxx 
 # *.hpp *.h++ *.idl *.odl *.cs *.php *.php3 *.inc *.m *.mm *.py *.f90
 
-FILE_PATTERNS          = 
+FILE_PATTERNS          = *.h
 
 # The RECURSIVE tag can be used to turn specify whether or not subdirectories 
 # should be searched for input files as well. Possible values are YES and NO. 
@@ -614,10 +614,10 @@ EXCLUDE_SYMLINKS       = NO
 # against the file with absolute path, so to exclude all test directories 
 # for example use the pattern */test/*
 
-EXCLUDE_PATTERNS       = */tests/* \
-                         */openmmapi/src/* \
-                         */internal/* \
-                         */.svn/* \
+EXCLUDE_PATTERNS       = @CMAKE_SOURCE_DIR@/*/tests/* \
+                         @CMAKE_SOURCE_DIR@/*/openmmapi/src/* \
+                         @CMAKE_SOURCE_DIR@/*/internal/* \
+                         @CMAKE_SOURCE_DIR@/*/.svn/* \
                          *amoebaKernels.h \
                          *DrudeKernels.h \
                          *RpmdKernels.h \

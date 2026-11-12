@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2018 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -40,6 +38,7 @@ using namespace OpenMM;
 using namespace std;
 
 RMSDForceImpl::RMSDForceImpl(const RMSDForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 RMSDForceImpl::~RMSDForceImpl() {
@@ -73,15 +72,13 @@ void RMSDForceImpl::initialize(ContextImpl& context) {
 }
 
 double RMSDForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcRMSDForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> RMSDForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcRMSDForceKernel::Name());
-    return names;
+    return {CalcRMSDForceKernel::Name()};
 }
 
 void RMSDForceImpl::updateParametersInContext(ContextImpl& context) {

@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -28,7 +26,8 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/OpenMMException.h"
-#include "windowsExportCuda.h"
+#include "openmm/common/windowsExportCommon.h"
+#include "openmm/common/ArrayInterface.h"
 #include <cuda.h>
 #include <iostream>
 #include <sstream>
@@ -43,7 +42,7 @@ class CudaContext;
  * for working with it and for copying data to and from device memory.
  */
 
-class OPENMM_EXPORT_CUDA CudaArray {
+class OPENMM_EXPORT_COMMON CudaArray : public ArrayInterface {
 public:
     /**
      * Create a CudaArray object.  The object is allocated on the heap with the "new" operator.
@@ -54,7 +53,7 @@ public:
      * @param name              the name of the array
      */
     template <class T>
-    static CudaArray* create(CudaContext& context, int size, const std::string& name) {
+    static CudaArray* create(CudaContext& context, size_t size, const std::string& name) {
         return new CudaArray(context, size, sizeof(T), name);
     }
     /**
@@ -70,7 +69,7 @@ public:
      * @param elementSize       the size of each element in bytes
      * @param name              the name of the array
      */
-    CudaArray(CudaContext& context, int size, int elementSize, const std::string& name);
+    CudaArray(CudaContext& context, size_t size, int elementSize, const std::string& name);
     ~CudaArray();
     /**
      * Initialize this object.
@@ -79,8 +78,9 @@ public:
      * @param size              the number of elements in the array
      * @param elementSize       the size of each element in bytes
      * @param name              the name of the array
+     * @param type              the type of values the array contains
      */
-    void initialize(CudaContext& context, int size, int elementSize, const std::string& name);
+    void initialize(ComputeContext& context, size_t size, int elementSize, const std::string& name, const std::type_info* type=nullptr);
     /**
      * Initialize this object.  The template argument is the data type of each array element.
      *
@@ -89,13 +89,13 @@ public:
      * @param name              the name of the array
      */
     template <class T>
-    void initialize(CudaContext& context, int size, const std::string& name) {
-        initialize(context, size, sizeof(T), name);
+    void initialize(ComputeContext& context, size_t size, const std::string& name) {
+        initialize(context, size, sizeof(T), name, &typeid(T));
     }
     /**
      * Recreate the internal storage to have a different size.
      */
-    void resize(int size);
+    void resize(size_t size);
     /**
      * Get whether this array has been initialized.
      */
@@ -105,7 +105,7 @@ public:
     /**
      * Get the number of elements in the array.
      */
-    int getSize() const {
+    size_t getSize() const {
         return size;
     }
     /**
@@ -121,6 +121,10 @@ public:
         return name;
     }
     /**
+     * Get the context this array belongs to.
+     */
+    ComputeContext& getContext();
+    /**
      * Get a pointer to the device memory.
      */
     CUdeviceptr& getDevicePointer() {
@@ -130,50 +134,36 @@ public:
      * Copy the values in a vector to the device memory.
      */
     template <class T>
-    void upload(const std::vector<T>& data, bool convert = true) {
-        if (convert && data.size() == size && sizeof(T) != elementSize) {
-            if (sizeof(T) == 2*elementSize) {
-                // Convert values from double to single precision.
-                const double* d = reinterpret_cast<const double*>(&data[0]);
-                std::vector<float> v(elementSize*size/sizeof(float));
-                for (int i = 0; i < v.size(); i++)
-                    v[i] = (float) d[i];
-                upload(&v[0], true);
-                return;
-            }
-            if (2*sizeof(T) == elementSize) {
-                // Convert values from single to double precision.
-                const float* d = reinterpret_cast<const float*>(&data[0]);
-                std::vector<double> v(elementSize*size/sizeof(double));
-                for (int i = 0; i < v.size(); i++)
-                    v[i] = (double) d[i];
-                upload(&v[0], true);
-                return;
-            }
-        }
-        if (sizeof(T) != elementSize || data.size() != size)
-            throw OpenMMException("Error uploading array "+name+": The specified vector does not match the size of the array");
-        upload(&data[0], true);
+    void upload(const std::vector<T>& data, bool convert=false) {
+        ArrayInterface::upload(data, convert);
     }
     /**
      * Copy the values in the Buffer to a vector.
      */
     template <class T>
     void download(std::vector<T>& data) const {
-        if (sizeof(T) != elementSize)
-            throw OpenMMException("Error downloading array "+name+": The specified vector has the wrong element size");
-        if (data.size() != size)
-            data.resize(size);
-        download(&data[0], true);
+        ArrayInterface::download(data);
     }
     /**
-     * Copy the values in an array to the device memory.
+     * Copy the values from host memory to the array.
      * 
      * @param data     the data to copy
      * @param blocking if true, this call will block until the transfer is complete.  If false,
      *                 the source array  must be in page-locked memory.
      */
-    void upload(const void* data, bool blocking = true);
+    void upload(const void* data, bool blocking=true) {
+        uploadSubArray(data, 0, getSize(), blocking);
+    }
+    /**
+     * Copy values from host memory to a subset of the array.
+     * 
+     * @param data     the data to copy
+     * @param offset   the index of the element within the array at which the copy should begin
+     * @param elements the number of elements to copy
+     * @param blocking if true, this call will block until the transfer is complete.  If false,
+     *                 the source array  must be in page-locked memory.
+     */
+    void uploadSubArray(const void* data, int offset, int elements, bool blocking=true);
     /**
      * Copy the values in the device memory to an array.
      * 
@@ -181,17 +171,18 @@ public:
      * @param blocking if true, this call will block until the transfer is complete.  If false,
      *                 the destination array must be in page-locked memory.
      */
-    void download(void* data, bool blocking = true) const;
+    void download(void* data, bool blocking=true) const;
     /**
      * Copy the values in the device memory to a second array.
      * 
      * @param dest     the destination array to copy to
      */
-    void copyTo(CudaArray& dest) const;
+    void copyTo(ArrayInterface& dest) const;
 private:
     CudaContext* context;
     CUdeviceptr pointer;
-    int size, elementSize;
+    size_t size;
+    int elementSize;
     bool ownsMemory;
     std::string name;
 };

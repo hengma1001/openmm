@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2020 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -59,9 +57,7 @@ void VerletIntegrator::cleanup() {
 }
 
 vector<string> VerletIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateVerletStepKernel::Name());
-    return names;
+    return {IntegrateVerletStepKernel::Name()};
 }
 
 double VerletIntegrator::computeKineticEnergy() {
@@ -73,7 +69,7 @@ void VerletIntegrator::step(int steps) {
         throw OpenMMException("This Integrator is not bound to a context!");
     for (int i = 0; i < steps; ++i) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         kernel.getAs<IntegrateVerletStepKernel>().execute(*context, *this);
     }
 }

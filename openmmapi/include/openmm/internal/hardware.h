@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2013 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -36,15 +34,13 @@
  * This file defines a collection of functions for querying the specific hardware being used.
  */
 
-/**
- * Get the number of CPU cores available.
- */
 #ifdef __APPLE__
    #include <sys/sysctl.h>
    #include <dlfcn.h>
 #else
    #ifdef WIN32
       #define NOMINMAX
+      #define WIN32_LEAN_AND_MEAN
       #include <windows.h>
       #include <intrin.h>
    #else
@@ -56,6 +52,9 @@
    #endif
 #endif
 
+/**
+ * Get the number of CPU cores available.
+ */
 static int getNumProcessors() {
 #ifdef __APPLE__
     int ncpu;
@@ -93,8 +92,9 @@ static int getNumProcessors() {
 #ifdef WIN32
 #define cpuid __cpuid
 #else
-#if !defined(__ANDROID__) && !defined(__PNACL__)
-    static void cpuid(int cpuInfo[4], int infoType){
+#if !defined(__ANDROID__) && !defined(__PNACL__) && !defined(__PPC__) \
+    && !defined(__ARM__) && !defined(__ARM64__) && !defined(__LOONGARCH64__)
+    static void cpuid(int cpuInfo[4], int infoType) {
     #ifdef __LP64__
         __asm__ __volatile__ (
             "cpuid":
@@ -118,7 +118,70 @@ static int getNumProcessors() {
         );
     #endif
     }
-    #endif
+#else
+    static void cpuid(int cpuInfo[4], int infoType) {
+        cpuInfo[0] = cpuInfo[1] = cpuInfo[2] = 0;
+    }
+#endif
 #endif
 
+/**
+ * Get whether this is an x86 CPU that supports AVX.
+ */
+static bool isAvxSupported() {
+#ifdef __AVX__
+    int cpuInfo[4];
+    cpuid(cpuInfo, 0);
+    if (cpuInfo[0] >= 1) {
+        cpuid(cpuInfo, 1);
+        return ((cpuInfo[2] & ((int) 1 << 28)) != 0);
+    }
+#endif /* __AVX__ */
+    return false;
+}
+
+/**
+ * Get whether this is an x86 CPU that supports AVX2.
+ */
+static bool isAvx2Supported() {
+#ifdef __AVX2__
+
+    // Provide an alternative implementation of CPUID to support AVX2. On older
+    // non-Windows OSes the hardware.h support for CPUID doesn't set the CX register
+    // properly and gives the wrong answer when detecting AVX2 and beyond. On Windows
+    // the cpuid seems to work as expected so can be used.
+
+#if !(defined(_WIN32) || defined(WIN32))
+    auto cpuid = [](int output[4], int functionnumber) {
+        int a, b, c, d;
+        __asm("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(functionnumber), "c"(0) : );
+        output[0] = a;
+        output[1] = b;
+        output[2] = c;
+        output[3] = d;
+    };
+#endif
+
+    int cpuInfo[4];
+    cpuid(cpuInfo, 0);
+
+    if (cpuInfo[0] >= 7) {
+        cpuInfo[2] = 0;
+        cpuid(cpuInfo, 7);
+        return ((cpuInfo[1] & ((int) 1 << 5)) != 0);
+    }
+
+#endif /* __AVX2__ */
+    return false;
+}
+
+/**
+ * Get the maximum supported size for vectors in multiples of four bytes.  This
+ * is the number of int or float values that can be contained in a vector.
+ */
+static int getVectorWidth() {
+    if (isAvxSupported())
+        return 8;
+    return 4;
+}
 #endif // OPENMM_HARDWARE_H_

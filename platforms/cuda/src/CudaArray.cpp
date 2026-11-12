@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2012-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2012-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -26,6 +24,7 @@
 
 #include "CudaArray.h"
 #include "CudaContext.h"
+#include "openmm/common/ContextSelector.h"
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -35,13 +34,13 @@ using namespace OpenMM;
 CudaArray::CudaArray() : pointer(0), ownsMemory(false) {
 }
 
-CudaArray::CudaArray(CudaContext& context, int size, int elementSize, const std::string& name) : pointer(0) {
+CudaArray::CudaArray(CudaContext& context, size_t size, int elementSize, const std::string& name) : pointer(0) {
     initialize(context, size, elementSize, name);
 }
 
 CudaArray::~CudaArray() {
     if (pointer != 0 && ownsMemory && context->getContextIsValid()) {
-        context->setAsCurrent();
+        ContextSelector selector(*context);
         CUresult result = cuMemFree(pointer);
         if (result != CUDA_SUCCESS) {
             std::stringstream str;
@@ -51,14 +50,15 @@ CudaArray::~CudaArray() {
     }
 }
 
-void CudaArray::initialize(CudaContext& context, int size, int elementSize, const std::string& name) {
+void CudaArray::initialize(ComputeContext& context, size_t size, int elementSize, const std::string& name, const std::type_info* type) {
     if (this->pointer != 0)
         throw OpenMMException("CudaArray has already been initialized");
-    this->context = &context;
+    this->context = &dynamic_cast<CudaContext&>(context);
     this->size = size;
     this->elementSize = elementSize;
     this->name = name;
     ownsMemory = true;
+    ContextSelector selector(*this->context);
     CUresult result = cuMemAlloc(&pointer, size*elementSize);
     if (result != CUDA_SUCCESS) {
         std::stringstream str;
@@ -67,11 +67,12 @@ void CudaArray::initialize(CudaContext& context, int size, int elementSize, cons
     }
 }
 
-void CudaArray::resize(int size) {
+void CudaArray::resize(size_t size) {
     if (pointer == 0)
         throw OpenMMException("CudaArray has not been initialized");
     if (!ownsMemory)
         throw OpenMMException("Cannot resize an array that does not own its storage");
+    ContextSelector selector(*context);
     CUresult result = cuMemFree(pointer);
     if (result != CUDA_SUCCESS) {
         std::stringstream str;
@@ -82,14 +83,20 @@ void CudaArray::resize(int size) {
     initialize(*context, size, elementSize, name);
 }
 
-void CudaArray::upload(const void* data, bool blocking) {
+ComputeContext& CudaArray::getContext() {
+    return *context;
+}
+
+void CudaArray::uploadSubArray(const void* data, int offset, int elements, bool blocking) {
     if (pointer == 0)
         throw OpenMMException("CudaArray has not been initialized");
+    if (offset < 0 || offset+elements > getSize())
+        throw OpenMMException("uploadSubArray: data exceeds range of array");
     CUresult result;
     if (blocking)
-        result = cuMemcpyHtoD(pointer, data, size*elementSize);
+        result = cuMemcpyHtoD(pointer+offset*elementSize, data, elements*elementSize);
     else
-        result = cuMemcpyHtoDAsync(pointer, data, size*elementSize, context->getCurrentStream());
+        result = cuMemcpyHtoDAsync(pointer+offset*elementSize, data, elements*elementSize, context->getCurrentStream());
     if (result != CUDA_SUCCESS) {
         std::stringstream str;
         str<<"Error uploading array "<<name<<": "<<CudaContext::getErrorString(result)<<" ("<<result<<")";
@@ -112,12 +119,13 @@ void CudaArray::download(void* data, bool blocking) const {
     }
 }
 
-void CudaArray::copyTo(CudaArray& dest) const {
+void CudaArray::copyTo(ArrayInterface& dest) const {
     if (pointer == 0)
         throw OpenMMException("CudaArray has not been initialized");
     if (dest.getSize() != size || dest.getElementSize() != elementSize)
         throw OpenMMException("Error copying array "+name+" to "+dest.getName()+": The destination array does not match the size of the array");
-    CUresult result = cuMemcpyDtoDAsync(dest.getDevicePointer(), pointer, size*elementSize, context->getCurrentStream());
+    CudaArray& cuDest = context->unwrap(dest);
+    CUresult result = cuMemcpyDtoDAsync(cuDest.getDevicePointer(), pointer, size*elementSize, context->getCurrentStream());
     if (result != CUDA_SUCCESS) {
         std::stringstream str;
         str<<"Error copying array "<<name<<" to "<<dest.getName()<<": "<<CudaContext::getErrorString(result)<<" ("<<result<<")";

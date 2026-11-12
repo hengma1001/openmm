@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2009 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,12 +43,12 @@ class OPENMM_EXPORT VirtualSite;
  * This class represents a molecular system.  The definition of a System involves
  * four elements:
  *
- * <ol>
+ * <ul>
  * <li>The set of particles in the system</li>
  * <li>The forces acting on them</li>
  * <li>Pairs of particles whose separation should be constrained to a fixed value</li>
  * <li>For periodic systems, the dimensions of the periodic box</li>
- * </ol>
+ * </ul>
  *
  * The particles and constraints are defined directly by the System object, while
  * forces are defined by objects that extend the Force class.  After creating a
@@ -73,9 +71,7 @@ public:
     /**
      * Get the number of particles in this System.
      */
-    int getNumParticles() const {
-        return masses.size();
-    }
+    int getNumParticles() const;
     /**
      * Add a particle to the System.  If the mass is 0, Integrators will ignore
      * the particle and not modify its position or velocity.  This is most often
@@ -136,9 +132,7 @@ public:
     /**
      * Get the number of distance constraints in this System.
      */
-    int getNumConstraints() const {
-        return constraints.size();
-    }
+    int getNumConstraints() const;
     /**
      * Add a constraint to the System.  Particles whose mass is 0 cannot participate
      * in constraints.
@@ -189,9 +183,7 @@ public:
     /**
      * Get the number of Force objects that have been added to the System.
      */
-    int getNumForces() const {
-        return forces.size();
-    }
+    int getNumForces() const;
     /**
      * Get a const reference to one of the Forces in this System.
      *

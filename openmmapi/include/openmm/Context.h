@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -138,9 +136,21 @@ public:
      */
     void setState(const State& state);
     /**
+     * Get the current time of the simulation (in picoseconds).
+     */
+    double getTime() const;
+    /**
      * Set the current time of the simulation (in picoseconds).
      */
     void setTime(double time);
+    /**
+     * Get the current step count.
+     */
+    long long getStepCount() const;
+    /**
+     * Set the current step count.
+     */
+    void setStepCount(long long count);
     /**
      * Set the positions of all particles in the System (measured in nm).  This method simply sets the positions
      * without checking to see whether they satisfy distance constraints.  If you want constraints to be
@@ -277,6 +287,7 @@ private:
     friend class Force;
     friend class ForceImpl;
     friend class Platform;
+    friend class LocalEnergyMinimizer;
     Context(const System& system, Integrator& integrator, ContextImpl& linked);
     ContextImpl& getImpl();
     const ContextImpl& getImpl() const;

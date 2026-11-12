@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -43,6 +41,7 @@ void testSerialization() {
 
     RBTorsionForce force;
     force.setForceGroup(3);
+    force.setName("custom name");
     force.addTorsion(0, 1, 2, 3, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6);
     force.addTorsion(0, 2, 3, 4, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7);
     force.addTorsion(2, 3, 4, 7, -1, -2, -3, 1.1, 2.2, 3.3);
@@ -58,6 +57,7 @@ void testSerialization() {
 
     RBTorsionForce& force2 = *copy;
     ASSERT_EQUAL(force.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force.getName(), force2.getName());
     ASSERT_EQUAL(force.usesPeriodicBoundaryConditions(), force2.usesPeriodicBoundaryConditions());
     ASSERT_EQUAL(force.getNumTorsions(), force2.getNumTorsions());
     for (int i = 0; i < force.getNumTorsions(); i++) {

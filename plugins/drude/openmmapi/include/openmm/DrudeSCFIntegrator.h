@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2013 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,7 +30,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.                                     *
  * -------------------------------------------------------------------------- */
 
-#include "openmm/Integrator.h"
+#include "openmm/DrudeIntegrator.h"
 #include "openmm/Kernel.h"
 #include "openmm/internal/windowsExportDrude.h"
 
@@ -47,7 +45,7 @@ namespace OpenMM {
  * particles.
  */
 
-class OPENMM_EXPORT_DRUDE DrudeSCFIntegrator : public Integrator {
+class OPENMM_EXPORT_DRUDE DrudeSCFIntegrator : public DrudeIntegrator {
 public:
     /**
      * Create a DrudeSCFIntegrator.
@@ -70,39 +68,33 @@ public:
      *
      * @param tol    the error tolerance to use, measured in kJ/mol/nm
      */
-    void setMinimizationErrorTolerance(double tol) {
-        tolerance = tol;
-    }
+    void setMinimizationErrorTolerance(double tol);
     /**
      * Advance a simulation through time by taking a series of time steps.
      *
      * @param steps   the number of time steps to take
      */
-    void step(int steps);
+    void step(int steps) override;
 protected:
     /**
      * This will be called by the Context when it is created.  It informs the Integrator
      * of what context it will be integrating, and gives it a chance to do any necessary initialization.
      * It will also get called again if the application calls reinitialize() on the Context.
      */
-    void initialize(ContextImpl& context);
+    void initialize(ContextImpl& context) override;
     /**
      * This will be called by the Context when it is destroyed to let the Integrator do any necessary
      * cleanup.  It will also get called again if the application calls reinitialize() on the Context.
      */
-    void cleanup();
-    /**
-     * When the user modifies the state, we need to mark that the forces need to be recalculated.
-     */
-    void stateChanged(State::DataType changed);
+    void cleanup() override;
     /**
      * Get the names of all Kernels used by this Integrator.
      */
-    std::vector<std::string> getKernelNames();
+    std::vector<std::string> getKernelNames() override;
     /**
      * Compute the kinetic energy of the system at the current time.
      */
-    double computeKineticEnergy();
+    double computeKineticEnergy() override;
 private:
     double tolerance;
     Kernel kernel;

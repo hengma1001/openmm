@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -36,8 +34,8 @@
 #include "openmm/KernelFactory.h"
 #include "openmm/internal/ContextImpl.h"
 #ifdef WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <sstream>
 #else
 #ifndef __PNACL__
     #include <dlfcn.h>
@@ -45,6 +43,7 @@
 #include <dirent.h>
 #include <cstdlib>
 #endif
+#include <sstream>
 #include <set>
 #include <algorithm>
 
@@ -61,7 +60,7 @@ static bool stringLengthComparator(string i, string j) {
 static int registerPlatforms() {
 
     // Register the Platforms built into the main library.  This should eventually be moved elsewhere.
-    
+
     ReferencePlatform* platform = new ReferencePlatform();
     Platform::registerPlatform(platform);
     return 0;
@@ -111,13 +110,17 @@ void Platform::setPropertyDefaultValue(const string& property, const string& val
     throw OpenMMException("setPropertyDefaultValue: Illegal property name");
 }
 
+vector<map<string, string> > Platform::getDevices(const map<string, string>& filters) const {
+    return {{}};
+}
+
 void Platform::contextCreated(ContextImpl& context, const map<string, string>& properties) const {
 }
 
 void Platform::linkedContextCreated(ContextImpl& context, ContextImpl& originalContext) const {
     // The default implementation just copies over the properties and calls contextCreated().
     // Subclasses may override this to do something different.
-    
+
     map<string, string> properties;
     for (auto& name : getPropertyNames())
         properties[name] = getPropertyValue(originalContext.getOwner(), name);
@@ -161,6 +164,10 @@ Platform& Platform::getPlatform(int index) {
         return *getPlatforms()[index];
     }
     throw OpenMMException("Invalid platform index");
+}
+
+Platform& Platform::getPlatform(const string& name) {
+    return getPlatformByName(name);
 }
 
 std::vector<std::string> Platform::getPluginLoadFailures() {
@@ -221,8 +228,12 @@ static void initializePlugins(vector<HMODULE>& plugins) {
 static void* loadOneLibrary(const string& file) {
 #ifdef __PNACL__
     throw OpenMMException("Loading dynamic libraries is not supported on PNaCl");
-#else    
+#else
+#ifdef __APPLE__
     void *handle = dlopen(file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+#else
+    void *handle = dlopen(file.c_str(), RTLD_LAZY | RTLD_LOCAL);
+#endif
     if (handle == NULL) {
         throw OpenMMException("Error loading library "+file+": "+dlerror());
     }
@@ -261,31 +272,42 @@ void Platform::loadPluginLibrary(const string& file) {
 vector<string> Platform::loadPluginsFromDirectory(const string& directory) {
     vector<string> files;
     char dirSeparator;
+    char pathSeparator;
+    stringstream sdirectory(directory);
 #ifdef WIN32
     dirSeparator = '\\';
+    pathSeparator = ';';
     WIN32_FIND_DATA fileInfo;
-    string filePattern(directory + dirSeparator + "*.dll");
-    HANDLE findHandle = FindFirstFile(filePattern.c_str(), &fileInfo);
-    if (findHandle != INVALID_HANDLE_VALUE) {
-        do {
-            if (fileInfo.cFileName[0] != '.')
-                files.push_back(string(fileInfo.cFileName));
-        } while (FindNextFile(findHandle, &fileInfo));
-        FindClose(findHandle);
+
+    for (string path; std::getline(sdirectory, path, pathSeparator);) {
+        string filePattern(path + dirSeparator + "*.dll");
+        HANDLE findHandle = FindFirstFile(filePattern.c_str(), &fileInfo);
+        if (findHandle != INVALID_HANDLE_VALUE) {
+            do {
+                if (fileInfo.cFileName[0] != '.')
+                    files.push_back(path+dirSeparator+string(fileInfo.cFileName));
+            } while (FindNextFile(findHandle, &fileInfo));
+            FindClose(findHandle);
+        }
     }
     vector<HMODULE> plugins;
 #else
-    dirSeparator = '/';
     DIR* dir;
+    dirSeparator = '/';
+    pathSeparator = ':';
     struct dirent *entry;
-    dir = opendir(directory.c_str());
-    if (dir != NULL) {
-        while ((entry = readdir(dir)) != NULL) {
-            if (entry->d_name[0] != '.')
-                files.push_back(string(entry->d_name));
+
+    for (string path; std::getline(sdirectory, path, pathSeparator);) {
+        dir = opendir(path.c_str());
+        if (dir != NULL) {
+            while ((entry = readdir(dir)) != NULL) {
+                if (entry->d_name[0] != '.')
+                    files.push_back(path+dirSeparator+string(entry->d_name));
+            }
+            closedir(dir);
         }
-        closedir(dir);
     }
+
     vector<void*> plugins;
 #endif
     vector<string> loadedLibraries;
@@ -294,7 +316,7 @@ vector<string> Platform::loadPluginsFromDirectory(const string& directory) {
 
     for (unsigned int i = 0; i < files.size(); ++i) {
         try {
-            plugins.push_back(loadOneLibrary(directory+dirSeparator+files[i]));
+            plugins.push_back(loadOneLibrary(files[i]));
             loadedLibraries.push_back(files[i]);
         } catch (OpenMMException& ex) {
 	    pluginLoadFailures.push_back(ex.what());
@@ -346,4 +368,3 @@ ContextImpl& Platform::getContextImpl(Context& context) const {
 const ContextImpl& Platform::getContextImpl(const Context& context) const {
     return *context.impl;
 }
-

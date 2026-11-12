@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2015-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2015-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -99,6 +97,15 @@ void CompoundIntegrator::step(int steps) {
     integrators[currentIntegrator]->step(steps);
 }
 
+int CompoundIntegrator::getIntegrationForceGroups() const {
+    return integrators[currentIntegrator]->getIntegrationForceGroups();
+}
+
+void CompoundIntegrator::setIntegrationForceGroups(int groups) {
+    for (int i = 0; i < integrators.size(); i++)
+        integrators[i]->setIntegrationForceGroups(groups);
+}
+
 void CompoundIntegrator::initialize(ContextImpl& context) {
     if (integrators.size() == 0)
         throw OpenMMException("CompoundIntegrator must contain at least one Integrator");
@@ -107,8 +114,10 @@ void CompoundIntegrator::initialize(ContextImpl& context) {
 }
 
 void CompoundIntegrator::cleanup() {
-    for (int i = 0; i < integrators.size(); i++)
+    for (int i = 0; i < integrators.size(); i++) {
         integrators[i]->cleanup();
+        integrators[i]->context = nullptr;
+    }
 }
 
 vector<string> CompoundIntegrator::getKernelNames() {
@@ -127,4 +136,35 @@ void CompoundIntegrator::stateChanged(State::DataType changed) {
 
 double CompoundIntegrator::computeKineticEnergy() {
     return integrators[currentIntegrator]->computeKineticEnergy();
+}
+
+void CompoundIntegrator::createCheckpoint(std::ostream& stream) const {
+    stream.write((char*) &currentIntegrator, sizeof(int));
+    for (int i = 0; i < integrators.size(); i++)
+        integrators[i]->createCheckpoint(stream);
+}
+
+void CompoundIntegrator::loadCheckpoint(std::istream& stream) {
+    stream.read((char*) &currentIntegrator, sizeof(int));
+    for (int i = 0; i < integrators.size(); i++)
+        integrators[i]->loadCheckpoint(stream);
+}
+
+void CompoundIntegrator::serializeParameters(SerializationNode& node) const {
+    node.setIntProperty("version", 1);
+    node.setIntProperty("currentIntegrator", currentIntegrator);
+    for (int i = 0; i < getNumIntegrators(); i++) {
+        SerializationNode& child = node.createChildNode("IntegratorParameters");
+        integrators[i]->serializeParameters(child);
+    }
+}
+
+void CompoundIntegrator::deserializeParameters(const SerializationNode& node) {
+    if (node.getIntProperty("version") != 1)
+        throw OpenMMException("Unsupported version number");
+    if (node.getChildren().size() != getNumIntegrators())
+        throw OpenMMException("State has wrong number of integrators for CompoundIntegrator");
+    setCurrentIntegrator(node.getIntProperty("currentIntegrator"));
+    for (int i = 0; i < node.getChildren().size(); i++)
+        integrators[i]->deserializeParameters(node.getChildren()[i]);
 }

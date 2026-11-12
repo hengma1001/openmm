@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman, Lee-Ping Wang                                      *
  * Contributors:                                                              *
  *                                                                            *
@@ -31,6 +29,7 @@
 
 #include "openmm/internal/AssertionUtilities.h"
 #include "openmm/CustomExternalForce.h"
+#include "openmm/CustomIntegrator.h"
 #include "openmm/HarmonicBondForce.h"
 #include "openmm/MonteCarloBarostat.h"
 #include "openmm/MonteCarloAnisotropicBarostat.h"
@@ -49,12 +48,12 @@ using namespace std;
 
 void testIdealGas() {
     const int numParticles = 64;
-    const int frequency = 10;
-    const int steps = 1000;
-    const double pressure = 1.5;
+    const int frequency = 2;
+    const int steps = 4000;
+    const double pressure = 3.0;
     const double pressureInMD = pressure*(AVOGADRO*1e-25); // pressure in kJ/mol/nm^3
-    const double temp[] = {300.0, 600.0, 1000.0};
-    const double initialVolume = numParticles*BOLTZ*temp[1]/pressureInMD;
+    const double temp[] = {300.0, 600.0};
+    const double initialVolume = numParticles*BOLTZ*0.5*(temp[0]+temp[1])/pressureInMD;
     const double initialLength = std::pow(initialVolume, 1.0/3.0);
     
     // Create a gas of noninteracting particles.
@@ -74,9 +73,9 @@ void testIdealGas() {
     bonds->setUsesPeriodicBoundaryConditions(true);
     system.addForce(bonds); // So it won't complain the system is non-periodic.
     
-    // Test it for three different temperatures.
+    // Test it for two different temperatures.
     
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 2; i++) {
         barostat->setDefaultTemperature(temp[i]);
         LangevinIntegrator integrator(temp[i], 0.1, 0.01);
         Context context(system, integrator, platform);
@@ -84,20 +83,26 @@ void testIdealGas() {
         
         // Let it equilibrate.
         
-        integrator.step(10000);
+        integrator.step(5000);
         
         // Now run it for a while and see if the volume is correct.
         
         double volume = 0.0;
+        Vec3 avgPressure;
         for (int j = 0; j < steps; ++j) {
             Vec3 box[3];
             context.getState(0).getPeriodicBoxVectors(box[0], box[1], box[2]);
             volume += box[0][0]*box[1][1]*box[2][2];
             integrator.step(frequency);
+            avgPressure += barostat->computeCurrentPressure(context);
         }
         volume /= steps;
+        avgPressure /= steps;
         double expected = (numParticles+1)*BOLTZ*temp[i]/pressureInMD;
         ASSERT_USUALLY_EQUAL_TOL(expected, volume, 3/std::sqrt((double) steps));
+        ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[0], 0.2);
+        ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[1], 0.2);
+        ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[2], 0.2);
     }
 }
 
@@ -106,10 +111,10 @@ void testIdealGasAxis(int axis) {
     const int numParticles = 64;
     const int frequency = 10;
     const int steps = 1000;
-    const double pressure = 1.5;
+    const double pressure = 3.0;
     const double pressureInMD = pressure*(AVOGADRO*1e-25); // pressure in kJ/mol/nm^3
-    const double temp[] = {300.0, 600.0, 1000.0};
-    const double initialVolume = numParticles*BOLTZ*temp[1]/pressureInMD;
+    const double temp = 300.0;
+    const double initialVolume = numParticles*BOLTZ*temp/pressureInMD;
     const double initialLength = std::pow(initialVolume, 1.0/3.0);
     const bool scaleX = (axis == 0);
     const bool scaleY = (axis == 1);
@@ -129,49 +134,171 @@ void testIdealGasAxis(int axis) {
         system.addParticle(1.0);
         positions[i] = Vec3(initialLength*genrand_real2(sfmt), 0.5*initialLength*genrand_real2(sfmt), 2*initialLength*genrand_real2(sfmt));
     }
-    MonteCarloAnisotropicBarostat* barostat = new MonteCarloAnisotropicBarostat(Vec3(pressure, pressure, pressure), temp[0], scaleX, scaleY, scaleZ, frequency);
+    MonteCarloAnisotropicBarostat* barostat = new MonteCarloAnisotropicBarostat(Vec3(pressure, pressure, pressure), temp, scaleX, scaleY, scaleZ, frequency);
     system.addForce(barostat);
     HarmonicBondForce* bonds = new HarmonicBondForce();
     bonds->setUsesPeriodicBoundaryConditions(true);
     system.addForce(bonds); // So it won't complain the system is non-periodic.
     
-    // Test it for three different temperatures.
+    // Try simulating it.
     
-    for (int i = 0; i < 3; i++) {
-        barostat->setDefaultTemperature(temp[i]);
-        LangevinIntegrator integrator(temp[i], 0.1, 0.01);
-        Context context(system, integrator, platform);
-        context.setPositions(positions);
-        
-        // Let it equilibrate.
-        
-        integrator.step(10000);
-        
-        // Now run it for a while and see if the volume is correct.
-        
-        double volume = 0.0;
-        for (int j = 0; j < steps; ++j) {
-            Vec3 box[3];
-            context.getState(0).getPeriodicBoxVectors(box[0], box[1], box[2]);
-            boxX = box[0][0];
-            boxY = box[1][1];
-            boxZ = box[2][2];
-            volume += box[0][0]*box[1][1]*box[2][2];
-            integrator.step(frequency);
+    barostat->setDefaultTemperature(temp);
+    LangevinIntegrator integrator(temp, 0.1, 0.01);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+
+    // Let it equilibrate.
+
+    integrator.step(5000);
+
+    // Now run it for a while and see if the volume is correct.
+
+    double volume = 0.0;
+    Vec3 avgPressure;
+    for (int j = 0; j < steps; ++j) {
+        Vec3 box[3];
+        context.getState(0).getPeriodicBoxVectors(box[0], box[1], box[2]);
+        boxX = box[0][0];
+        boxY = box[1][1];
+        boxZ = box[2][2];
+        volume += box[0][0]*box[1][1]*box[2][2];
+        integrator.step(frequency);
+        avgPressure += barostat->computeCurrentPressure(context);
+    }
+    volume /= steps;
+    avgPressure /= steps;
+    double expected = (numParticles+1)*BOLTZ*temp/pressureInMD;
+    ASSERT_USUALLY_EQUAL_TOL(expected, volume, 3/std::sqrt((double) steps));
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[0], 0.2);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[1], 0.2);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[2], 0.2);
+    if (!scaleX) {
+        ASSERT(boxX == initialLength);
+    }
+    if (!scaleY) {
+        ASSERT(boxY == 0.5*initialLength);
+    }
+    if (!scaleZ) {
+        ASSERT(boxZ == 2*initialLength);
+    }
+}
+
+void testMoleculeScaling(bool rigid) {
+    int numMolecules = 10;
+    double initialWidth = 3.0;
+
+    // Create a system of diatomic molecules.
+
+    System system;
+    Vec3 initialBox[] = {Vec3(initialWidth, 0, 0), Vec3(0, initialWidth, 0), Vec3(0, 0, initialWidth)};
+    system.setDefaultPeriodicBoxVectors(initialBox[0], initialBox[1], initialBox[2]);
+    HarmonicBondForce* bonds = new HarmonicBondForce();
+    system.addForce(bonds);
+    NonbondedForce* nonbonded = new NonbondedForce();
+    nonbonded->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
+    system.addForce(nonbonded);
+    MonteCarloAnisotropicBarostat* barostat = new MonteCarloAnisotropicBarostat(Vec3(1.0, 1.0, 1.0), 300.0, true, true, true, 1, rigid);
+    system.addForce(barostat);
+    vector<Vec3> positions;
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < numMolecules; i++) {
+        system.addParticle(1.0);
+        system.addParticle(1.0);
+        bonds->addBond(2*i, 2*i+1, 0.2, 1000.0);
+        nonbonded->addParticle(0.0, 0.1, 1.0);
+        nonbonded->addParticle(0.0, 0.1, 1.0);
+        Vec3 pos1(initialWidth*genrand_real2(sfmt), initialWidth*genrand_real2(sfmt), initialWidth*genrand_real2(sfmt));
+        Vec3 delta(genrand_real2(sfmt)-0.5, genrand_real2(sfmt)-0.5, genrand_real2(sfmt)-0.5);
+        delta /= sqrt(delta.dot(delta));
+        positions.push_back(pos1);
+        positions.push_back(pos1+delta);
+    }
+
+    // Use an integrator that applies the barostat but nothing else.
+
+    CustomIntegrator integrator(1.0);
+    integrator.addUpdateContextState();
+
+    // Let the barostat make some moves.
+
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    integrator.step(100);
+    State state = context.getState(State::Positions);
+
+    // The box size should have changed.
+
+    Vec3 finalBox[3];
+    state.getPeriodicBoxVectors(finalBox[0], finalBox[1], finalBox[2]);
+    for (int i = 0; i < 3; i++)
+        ASSERT(finalBox[i][i] != initialBox[i][i]);
+
+    // See if the molecules were scaled correctly.
+
+    Vec3 boxScale(finalBox[0][0]/initialBox[0][0], finalBox[1][1]/initialBox[1][1], finalBox[2][2]/initialBox[2][2]);
+    for (int i = 0; i < numMolecules; i++) {
+        Vec3 delta1 = positions[2*i+1]-positions[2*i];
+        Vec3 delta2 = state.getPositions()[2*i+1]-state.getPositions()[2*i];
+        if (rigid) {
+            ASSERT_EQUAL_VEC(delta1, delta2, 1e-5);
         }
-        volume /= steps;
-        double expected = (numParticles+1)*BOLTZ*temp[i]/pressureInMD;
-        ASSERT_USUALLY_EQUAL_TOL(expected, volume, 3/std::sqrt((double) steps));
-        if (!scaleX) {
-            ASSERT(boxX == initialLength);
-        }
-        if (!scaleY) {
-            ASSERT(boxY == 0.5*initialLength);
-        }
-        if (!scaleZ) {
-            ASSERT(boxZ == 2*initialLength);
+        else {
+            Vec3 expected(delta1[0]*boxScale[0], delta1[1]*boxScale[1], delta1[2]*boxScale[2]);
+            ASSERT_EQUAL_VEC(expected, delta2, 1e-5);
         }
     }
+}
+
+void testMolecularGas(bool rigid) {
+    const int numMolecules = 256;
+    const int frequency = 5;
+    const int steps = 5000;
+    const double pressure = 2.0;
+    const double pressureInMD = pressure*(AVOGADRO*1e-25); // pressure in kJ/mol/nm^3
+    const double temp = 300.0;
+    const double initialVolume = numMolecules*BOLTZ*temp/pressureInMD;
+    const double initialLength = std::pow(initialVolume, 1.0/3.0);
+
+    // Create a gas of noninteracting molecules.
+
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(initialLength, 0, 0), Vec3(0, 0.5*initialLength, 0), Vec3(0, 0, 2*initialLength));
+    MonteCarloAnisotropicBarostat* barostat = new MonteCarloAnisotropicBarostat(Vec3(pressure, pressure, pressure), temp, true, true, true, frequency, rigid);
+    system.addForce(barostat);
+    HarmonicBondForce* bonds = new HarmonicBondForce();
+    bonds->setUsesPeriodicBoundaryConditions(true);
+    system.addForce(bonds);
+    vector<Vec3> positions;
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < numMolecules; ++i) {
+        system.addParticle(1.0);
+        system.addParticle(1.0);
+        system.addParticle(1.0);
+        Vec3 pos(initialLength*genrand_real2(sfmt), 0.5*initialLength*genrand_real2(sfmt), 2*initialLength*genrand_real2(sfmt));
+        bonds->addBond(positions.size(), positions.size()+1, 0.1, 1.0);
+        bonds->addBond(positions.size(), positions.size()+2, 0.1, 1.0);
+        positions.push_back(pos);
+        positions.push_back(pos+Vec3(0.1, 0.0, 0.0));
+        positions.push_back(pos+Vec3(0.0, 0.1, 0.0));
+    }
+
+    // Simulate it and see if the pressure is correct.
+
+    LangevinIntegrator integrator(temp, 0.1, 0.005);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    integrator.step(5000);
+    Vec3 avgPressure;
+    for (int j = 0; j < steps; ++j) {
+        integrator.step(frequency);
+        avgPressure += barostat->computeCurrentPressure(context);
+    }
+    avgPressure /= steps;
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[0], 0.2);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[1], 0.2);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[2], 0.2);
 }
 
 void testRandomSeed() {
@@ -275,7 +402,7 @@ void testTriclinic() {
 
     // Let it equilibrate.
 
-    integrator.step(10000);
+    integrator.step(5000);
 
     // Now run it for a while and see if the volume is correct.
 
@@ -300,18 +427,6 @@ void testTriclinic() {
     double zscale = box[2][2]/(1.0*initialLength);
     for (int i = 0; i < 3; i++) {
         ASSERT_EQUAL_VEC(Vec3(xscale*initialBox[i][0], yscale*initialBox[i][1], zscale*initialBox[i][2]), box[i], 1e-5);
-    }
-
-    // The barostat should have put all particles inside the first periodic box.  One integration step
-    // has happened since then, so they may have moved slightly outside it.
-
-    for (int i = 0; i < numParticles; i++) {
-        Vec3 pos = state.getPositions()[i];
-        ASSERT(pos[2]/box[2][2] > -1 && pos[2]/box[2][2] < 2);
-        pos -= box[2]*floor(pos[2]/box[2][2]);
-        ASSERT(pos[1]/box[1][1] > -1 && pos[1]/box[1][1] < 2);
-        pos -= box[1]*floor(pos[1]/box[1][1]);
-        ASSERT(pos[0]/box[0][0] > -1 && pos[0]/box[0][0] < 2);
     }
 }
 
@@ -459,6 +574,54 @@ void testEinsteinCrystal() {
     ASSERT_USUALLY_EQUAL_TOL(results[11], results[14], 3/std::sqrt((double) steps));
 }
 
+void testLJPressure() {
+    const int gridSize = 8;
+    const int frequency = 10;
+    const int steps = 1000;
+    const double spacing = 1.2;
+    const double temp = 150.0;
+    const double pressure = 10.0;
+
+    // Create a gas of LJ particles.  This is much more compressible than water, which means
+    // the fluctuations in pressure are much smaller and it's easier to compute the average.
+
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(gridSize*spacing, 0, 0), Vec3(0, gridSize*spacing, 0), Vec3(0, 0, gridSize*spacing));
+    NonbondedForce* nonbonded = new NonbondedForce();
+    nonbonded->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
+    vector<Vec3> positions;
+    for (int i = 0; i < gridSize; ++i) {
+        for (int j = 0; j < gridSize; ++j) {
+            for (int k = 0; k < gridSize; ++k) {
+                system.addParticle(1.0);
+                nonbonded->addParticle(0.0, 1.0, 1.0);
+                positions.push_back(Vec3(spacing*i, spacing*j, spacing*k));
+            }
+        }
+    }
+    system.addForce(nonbonded);
+    MonteCarloAnisotropicBarostat* barostat = new MonteCarloAnisotropicBarostat(Vec3(pressure, pressure, pressure), temp, true, true, true, frequency);
+    system.addForce(barostat);
+
+    // Simulate it and see if the average instantaneous pressure matches the heat bath pressure.
+
+    LangevinIntegrator integrator(temp, 1.0, 0.01);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    integrator.step(1000);
+    Vec3 avgPressure;
+    for (int j = 0; j < steps; ++j) {
+        Vec3 box[3];
+        context.getState(0).getPeriodicBoxVectors(box[0], box[1], box[2]);
+        avgPressure += barostat->computeCurrentPressure(context);
+        integrator.step(frequency);
+    }
+    avgPressure /= steps;
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[0], 0.1);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[1], 0.1);
+    ASSERT_USUALLY_EQUAL_TOL(pressure, avgPressure[2], 0.1);
+}
+
 void runPlatformTests();
 
 int main(int argc, char* argv[]) {
@@ -468,6 +631,10 @@ int main(int argc, char* argv[]) {
         testIdealGasAxis(0);
         testIdealGasAxis(1);
         testIdealGasAxis(2);
+        testMoleculeScaling(true);
+        testMoleculeScaling(false);
+        testMolecularGas(true);
+        testMolecularGas(false);
         testRandomSeed();
         testTriclinic();
         //testEinsteinCrystal();

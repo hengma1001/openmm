@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void GayBerneForceProxy::serialize(const void* object, SerializationNode& node) 
     node.setIntProperty("version", 1);
     const GayBerneForce& force = *reinterpret_cast<const GayBerneForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setIntProperty("method", (int) force.getNonbondedMethod());
     node.setDoubleProperty("cutoff", force.getCutoffDistance());
     node.setBoolProperty("useSwitchingFunction", force.getUseSwitchingFunction());
@@ -73,6 +72,7 @@ void* GayBerneForceProxy::deserialize(const SerializationNode& node) const {
     GayBerneForce* force = new GayBerneForce();
     try {
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         force->setNonbondedMethod((GayBerneForce::NonbondedMethod) node.getIntProperty("method"));
         force->setCutoffDistance(node.getDoubleProperty("cutoff"));
         force->setUseSwitchingFunction(node.getBoolProperty("useSwitchingFunction", false));

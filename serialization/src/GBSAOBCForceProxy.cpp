@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2014 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void GBSAOBCForceProxy::serialize(const void* object, SerializationNode& node) c
     node.setIntProperty("version", 2);
     const GBSAOBCForce& force = *reinterpret_cast<const GBSAOBCForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setIntProperty("method", (int) force.getNonbondedMethod());
     node.setDoubleProperty("cutoff", force.getCutoffDistance());
     node.setDoubleProperty("soluteDielectric", force.getSoluteDielectric());
@@ -65,6 +64,7 @@ void* GBSAOBCForceProxy::deserialize(const SerializationNode& node) const {
     GBSAOBCForce* force = new GBSAOBCForce();
     try {
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         force->setNonbondedMethod((GBSAOBCForce::NonbondedMethod) node.getIntProperty("method"));
         force->setCutoffDistance(node.getDoubleProperty("cutoff"));
         force->setSoluteDielectric(node.getDoubleProperty("soluteDielectric"));

@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -104,11 +102,7 @@ void testExclusionsAnd14() {
         system.addParticle(1.0);
         nonbonded->addParticle(0, 1.5, 0);
     }
-    vector<pair<int, int> > bonds;
-    bonds.push_back(pair<int, int>(0, 1));
-    bonds.push_back(pair<int, int>(1, 2));
-    bonds.push_back(pair<int, int>(2, 3));
-    bonds.push_back(pair<int, int>(3, 4));
+    vector<pair<int, int> > bonds = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
     nonbonded->createExceptionsFromBonds(bonds, 0.0, 0.0);
     int first14, second14;
     for (int i = 0; i < nonbonded->getNumExceptions(); i++) {
@@ -235,11 +229,7 @@ void testCutoff14() {
     nonbonded->setCutoffDistance(cutoff);
     const double eps = 30.0;
     nonbonded->setReactionFieldDielectric(eps);
-    vector<pair<int, int> > bonds;
-    bonds.push_back(pair<int, int>(0, 1));
-    bonds.push_back(pair<int, int>(1, 2));
-    bonds.push_back(pair<int, int>(2, 3));
-    bonds.push_back(pair<int, int>(3, 4));
+    vector<pair<int, int> > bonds = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
     nonbonded->createExceptionsFromBonds(bonds, 0.0, 0.0);
     int first14, second14;
     for (int i = 0; i < nonbonded->getNumExceptions(); i++) {
@@ -354,6 +344,44 @@ void testPeriodic() {
     ASSERT_EQUAL_TOL(2*ONE_4PI_EPS0*(1.0)*(1.0+krf*1.0-crf), state.getPotentialEnergy(), TOL);
 }
 
+void testPeriodicExceptions() {
+    System system;
+    system.addParticle(1.0);
+    system.addParticle(1.0);
+    VerletIntegrator integrator(0.01);
+    NonbondedForce* nonbonded = new NonbondedForce();
+    nonbonded->addParticle(1.0, 1, 0);
+    nonbonded->addParticle(1.0, 1, 0);
+    nonbonded->addException(0, 1, 1.0, 1.0, 0.0);
+    nonbonded->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
+    const double cutoff = 2.0;
+    nonbonded->setCutoffDistance(cutoff);
+    system.setDefaultPeriodicBoxVectors(Vec3(4, 0, 0), Vec3(0, 4, 0), Vec3(0, 0, 4));
+    system.addForce(nonbonded);
+    Context context(system, integrator, platform);
+    vector<Vec3> positions(2);
+    positions[0] = Vec3(0, 0, 0);
+    positions[1] = Vec3(3, 0, 0);
+    context.setPositions(positions);
+    State state = context.getState(State::Forces | State::Energy);
+    vector<Vec3> forces = state.getForces();
+    double force = ONE_4PI_EPS0/(3*3);
+    ASSERT_EQUAL_VEC(Vec3(-force, 0, 0), forces[0], TOL);
+    ASSERT_EQUAL_VEC(Vec3(force, 0, 0), forces[1], TOL);
+    ASSERT_EQUAL_TOL(ONE_4PI_EPS0/3, state.getPotentialEnergy(), TOL);
+    
+    // Now make exceptions periodic and see if it changes correctly.
+    
+    nonbonded->setExceptionsUsePeriodicBoundaryConditions(true);
+    context.reinitialize(true);
+    state = context.getState(State::Forces | State::Energy);
+    forces = state.getForces();
+    force = ONE_4PI_EPS0/(1*1);
+    ASSERT_EQUAL_VEC(Vec3(force, 0, 0), forces[0], TOL);
+    ASSERT_EQUAL_VEC(Vec3(-force, 0, 0), forces[1], TOL);
+    ASSERT_EQUAL_TOL(ONE_4PI_EPS0/1, state.getPotentialEnergy(), TOL);
+}
+
 void testTriclinic() {
     System system;
     system.addParticle(1.0);
@@ -417,15 +445,16 @@ void testTriclinic() {
 }
 
 void testLargeSystem() {
-    const int numMolecules = 600;
+    const int numMolecules = 1600;
     const int numParticles = numMolecules*2;
     const double cutoff = 2.0;
-    const double boxSize = 20.0;
+    const double boxSize = 40.0;
     const double tol = 2e-3;
     ReferencePlatform reference;
     System system;
     for (int i = 0; i < numParticles; i++)
         system.addParticle(1.0);
+    system.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0, 0), Vec3(0, boxSize, 0), Vec3(0, 0, boxSize));
     NonbondedForce* nonbonded = new NonbondedForce();
     HarmonicBondForce* bonds = new HarmonicBondForce();
     vector<Vec3> positions(numParticles);
@@ -450,10 +479,9 @@ void testLargeSystem() {
         nonbonded->addException(2*i, 2*i+1, 0.0, 0.15, 0.0);
     }
 
-    // Try with cutoffs but not periodic boundary conditions, and make sure it agrees with the Reference platform.
+    // Try with no cutoffs and make sure it agrees with the Reference platform.
 
-    nonbonded->setNonbondedMethod(NonbondedForce::CutoffNonPeriodic);
-    nonbonded->setCutoffDistance(cutoff);
+    nonbonded->setNonbondedMethod(NonbondedForce::NoCutoff);
     system.addForce(nonbonded);
     system.addForce(bonds);
     VerletIntegrator integrator1(0.01);
@@ -473,16 +501,26 @@ void testLargeSystem() {
     }
     ASSERT_EQUAL_TOL(state.getPotentialEnergy(), referenceState.getPotentialEnergy(), tol);
 
+    // Now try cutoffs but not periodic boundary conditions.
+
+    nonbonded->setNonbondedMethod(NonbondedForce::CutoffNonPeriodic);
+    nonbonded->setCutoffDistance(cutoff);
+    context.reinitialize(true);
+    referenceContext.reinitialize(true);
+    state = context.getState(State::Positions | State::Velocities | State::Forces | State::Energy);
+    referenceState = referenceContext.getState(State::Positions | State::Velocities | State::Forces | State::Energy);
+    for (int i = 0; i < numParticles; i++) {
+        ASSERT_EQUAL_VEC(state.getPositions()[i], referenceState.getPositions()[i], tol);
+        ASSERT_EQUAL_VEC(state.getVelocities()[i], referenceState.getVelocities()[i], tol);
+        ASSERT_EQUAL_VEC(state.getForces()[i], referenceState.getForces()[i], tol);
+    }
+    ASSERT_EQUAL_TOL(state.getPotentialEnergy(), referenceState.getPotentialEnergy(), tol);
+
     // Now do the same thing with periodic boundary conditions.
 
     nonbonded->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
-    system.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0, 0), Vec3(0, boxSize, 0), Vec3(0, 0, boxSize));
-    context.reinitialize();
-    referenceContext.reinitialize();
-    context.setPositions(positions);
-    context.setVelocities(velocities);
-    referenceContext.setPositions(positions);
-    referenceContext.setVelocities(velocities);
+    context.reinitialize(true);
+    referenceContext.reinitialize(true);
     state = context.getState(State::Positions | State::Velocities | State::Forces | State::Energy);
     referenceState = referenceContext.getState(State::Positions | State::Velocities | State::Forces | State::Energy);
     for (int i = 0; i < numParticles; i++) {
@@ -496,6 +534,63 @@ void testLargeSystem() {
         ASSERT_EQUAL_VEC(state.getForces()[i], referenceState.getForces()[i], tol);
     }
     ASSERT_EQUAL_TOL(state.getPotentialEnergy(), referenceState.getPotentialEnergy(), tol);
+}
+
+void testHugeSystem(double tol=1e-5) {
+    // Create a system with over 3 million particles.
+    
+    const int gridSize = 150;
+    const int numParticles = gridSize*gridSize*gridSize;
+    const double spacing = 0.3;
+    const double boxSize = gridSize*spacing;
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0, 0), Vec3(0, boxSize, 0), Vec3(0, 0, boxSize));
+    NonbondedForce* force = new NonbondedForce();
+    system.addForce(force);
+    force->setNonbondedMethod(NonbondedForce::CutoffPeriodic);
+    force->setCutoffDistance(1.0);
+    force->setUseSwitchingFunction(true);
+    force->setSwitchingDistance(0.9);
+    vector<Vec3> positions;
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < gridSize; i++)
+        for (int j = 0; j < gridSize; j++)
+            for (int k = 0; k < gridSize; k++) {
+                system.addParticle(1.0);
+                force->addParticle(0.0, 0.1, 1.0);
+                positions.push_back(Vec3(i*spacing+genrand_real2(sfmt)*0.1, j*spacing+genrand_real2(sfmt)*0.1, k*spacing+genrand_real2(sfmt)*0.1));
+            }
+    VerletIntegrator integrator(0.01);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+
+    // Compute the norm of the force.
+
+    State state = context.getState(State::Forces);
+    double norm = 0.0;
+    for (int i = 0; i < numParticles; ++i) {
+        Vec3 f = state.getForces()[i];
+        norm += f[0]*f[0] + f[1]*f[1] + f[2]*f[2];
+    }
+    norm = std::sqrt(norm);
+    
+    // Take a small step in the direction of the energy gradient and see whether the potential energy changes by the expected amount.
+
+    const double delta = 0.3;
+    double step = 0.5*delta/norm;
+    vector<Vec3> positions2(numParticles), positions3(numParticles);
+    for (int i = 0; i < numParticles; ++i) {
+        Vec3 p = positions[i];
+        Vec3 f = state.getForces()[i];
+        positions2[i] = Vec3(p[0]-f[0]*step, p[1]-f[1]*step, p[2]-f[2]*step);
+        positions3[i] = Vec3(p[0]+f[0]*step, p[1]+f[1]*step, p[2]+f[2]*step);
+    }
+    context.setPositions(positions2);
+    State state2 = context.getState(State::Energy);
+    context.setPositions(positions3);
+    State state3 = context.getState(State::Energy);
+    ASSERT_EQUAL_TOL(state2.getPotentialEnergy(), state3.getPotentialEnergy()+norm*delta, tol)
 }
 
 void testDispersionCorrection() {
@@ -629,6 +724,139 @@ void testChangingParameters() {
     ASSERT_EQUAL_TOL(state.getPotentialEnergy(), referenceState.getPotentialEnergy(), tol);
 }
 
+void testChangingSubsetOfParameters() {
+    const int numMolecules = 600;
+    const int numParticles = numMolecules*2;
+    const double cutoff = 2.0;
+    const double boxSize = 20.0;
+    const double tol = 2e-3;
+    ReferencePlatform reference;
+    System system;
+    for (int i = 0; i < numParticles; i++)
+        system.addParticle(1.0);
+    NonbondedForce* nonbonded = new NonbondedForce();
+    vector<Vec3> positions(numParticles);
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < numMolecules; i++) {
+        nonbonded->addParticle(-1.0, 0.2, 0.1);
+        nonbonded->addParticle(1.0, 0.1, 0.1);
+        positions[2*i] = Vec3(boxSize*genrand_real2(sfmt), boxSize*genrand_real2(sfmt), boxSize*genrand_real2(sfmt));
+        positions[2*i+1] = Vec3(positions[2*i][0]+1.0, positions[2*i][1], positions[2*i][2]);
+        system.addConstraint(2*i, 2*i+1, 1.0);
+        if (i%3 == 0)
+            nonbonded->addException(2*i, 2*i+1, -0.5, 0.15, 0.05);
+        else
+            nonbonded->addException(2*i, 2*i+1, 0.0, 0.15, 0.0);
+    }
+    nonbonded->setNonbondedMethod(NonbondedForce::PME);
+    nonbonded->setCutoffDistance(cutoff);
+    system.addForce(nonbonded);
+    system.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0, 0), Vec3(0, boxSize, 0), Vec3(0, 0, boxSize));
+    VerletIntegrator integrator1(0.01);
+    VerletIntegrator integrator2(0.01);
+    Context context(system, integrator1, platform);
+    Context referenceContext(system, integrator2, reference);
+    context.setPositions(positions);
+    referenceContext.setPositions(positions);
+
+    // Change a few particles and exceptions in the middle of the system, then a different
+    // few, checking against the Reference platform each time.
+
+    for (int round = 0; round < 3; round++) {
+        int firstMolecule = 100+150*round;
+        for (int i = firstMolecule; i < firstMolecule+10; i++) {
+            double charge, sigma, epsilon;
+            nonbonded->getParticleParameters(2*i, charge, sigma, epsilon);
+            nonbonded->setParticleParameters(2*i, 1.2*charge, 1.1*sigma, 1.5*epsilon);
+            nonbonded->getParticleParameters(2*i+1, charge, sigma, epsilon);
+            nonbonded->setParticleParameters(2*i+1, 1.2*charge, 1.1*sigma, 1.5*epsilon);
+            int particle1, particle2;
+            double chargeProd;
+            nonbonded->getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
+            if (chargeProd != 0.0)
+                nonbonded->setExceptionParameters(i, particle1, particle2, 1.3*chargeProd, 1.1*sigma, 1.4*epsilon);
+            else
+                nonbonded->setExceptionParameters(i, particle1, particle2, 0.0, 1.1*sigma, 0.0);
+        }
+        nonbonded->updateParametersInContext(context);
+        nonbonded->updateParametersInContext(referenceContext);
+        State state = context.getState(State::Forces | State::Energy);
+        State referenceState = referenceContext.getState(State::Forces | State::Energy);
+        for (int i = 0; i < numParticles; i++)
+            ASSERT_EQUAL_VEC(state.getForces()[i], referenceState.getForces()[i], tol);
+        ASSERT_EQUAL_TOL(state.getPotentialEnergy(), referenceState.getPotentialEnergy(), tol);
+    }
+
+    // Making an excluded exception non-excluded is not allowed.
+
+    nonbonded->setExceptionParameters(1, 2, 3, 0.5, 0.15, 0.05);
+    bool thrown = false;
+    try {
+        nonbonded->updateParametersInContext(context);
+    }
+    catch (const OpenMMException& exception) {
+        thrown = true;
+    }
+    ASSERT(thrown);
+
+    // Neither is adding an exception.
+
+    nonbonded->setExceptionParameters(1, 2, 3, 0.0, 0.15, 0.0);
+    nonbonded->updateParametersInContext(context);
+    nonbonded->addException(0, 5, 0.1, 0.2, 0.1);
+    thrown = false;
+    try {
+        nonbonded->updateParametersInContext(context);
+    }
+    catch (const OpenMMException& exception) {
+        thrown = true;
+    }
+    ASSERT(thrown);
+}
+
+void testChangingParametersWithoutLJ() {
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(6, 0, 0), Vec3(0, 6, 0), Vec3(0, 0, 6));
+    NonbondedForce* nonbonded = new NonbondedForce();
+    vector<Vec3> positions;
+    for (int i = 0; i < 10; i++) {
+        system.addParticle(1.0);
+        nonbonded->addParticle(i%2 == 0 ? 1.0 : -1.0, 0.2, 0.0);
+        positions.push_back(Vec3(0.5*i, 0, 0));
+    }
+    nonbonded->setNonbondedMethod(NonbondedForce::PME);
+    nonbonded->setCutoffDistance(2.0);
+    system.addForce(nonbonded);
+    ReferencePlatform reference;
+    VerletIntegrator integrator1(0.01);
+    VerletIntegrator integrator2(0.01);
+    Context context(system, integrator1, platform);
+    Context referenceContext(system, integrator2, reference);
+    context.setPositions(positions);
+    referenceContext.setPositions(positions);
+    context.getState(State::Energy);
+
+    // Changing a charge is fine.
+
+    nonbonded->setParticleParameters(4, 0.5, 0.2, 0.0);
+    nonbonded->updateParametersInContext(context);
+    nonbonded->updateParametersInContext(referenceContext);
+    ASSERT_EQUAL_TOL(referenceContext.getState(State::Energy).getPotentialEnergy(), context.getState(State::Energy).getPotentialEnergy(), 1e-4);
+
+    // A platform that built its kernel without Lennard-Jones interactions must reject a
+    // nonzero epsilon.  One that did not must apply it.
+
+    nonbonded->setParticleParameters(4, 0.5, 0.2, 0.1);
+    nonbonded->updateParametersInContext(referenceContext);
+    try {
+        nonbonded->updateParametersInContext(context);
+        ASSERT_EQUAL_TOL(referenceContext.getState(State::Energy).getPotentialEnergy(), context.getState(State::Energy).getPotentialEnergy(), 1e-4);
+    }
+    catch (const OpenMMException& exception) {
+    }
+}
+
 void testSwitchingFunction(NonbondedForce::NonbondedMethod method) {
     System system;
     system.setDefaultPeriodicBoxVectors(Vec3(6, 0, 0), Vec3(0, 6, 0), Vec3(0, 0, 6));
@@ -743,8 +971,9 @@ void testParameterOffsets() {
     force->addParticle(1.0, 0.5, 0.6);
     force->addParticle(-1.0, 2.0, 0.7);
     force->addParticle(0.5, 2.0, 0.8);
-    force->addException(0, 1, 1.0, 1.5, 1.0);
+    force->addException(0, 3, 0.0, 1.0, 0.0);
     force->addException(2, 3, 0.5, 1.0, 1.5);
+    force->addException(0, 1, 1.0, 1.5, 1.0);
     force->addGlobalParameter("p1", 0.0);
     force->addGlobalParameter("p2", 1.0);
     force->addParticleParameterOffset("p1", 0, 3.0, 0.5, 0.5);
@@ -775,12 +1004,15 @@ void testParameterOffsets() {
             pairSigma[i][j] = 0.5*(particleSigma[i]+particleSigma[j]);
             pairEpsilon[i][j] = sqrt(particleEpsilon[i]*particleEpsilon[j]);
         }
-    pairChargeProd[0][1] = 1.0;
-    pairSigma[0][1] = 1.5;
-    pairEpsilon[0][1] = 1.0;
+    pairChargeProd[0][3] = 0.0;
+    pairSigma[0][3] = 1.0;
+    pairEpsilon[0][3] = 0.0;
     pairChargeProd[2][3] = 0.5+0.5*0.5;
     pairSigma[2][3] = 1.0+0.5*0.5;
     pairEpsilon[2][3] = 1.5+1.5*0.5;
+    pairChargeProd[0][1] = 1.0;
+    pairSigma[0][1] = 1.5;
+    pairEpsilon[0][1] = 1.0;
     
     // Compute the expected energy.
 
@@ -792,6 +1024,223 @@ void testParameterOffsets() {
             energy += ONE_4PI_EPS0*pairChargeProd[i][j]/dist + 4.0*pairEpsilon[i][j]*(pow(x, 12.0)-pow(x, 6.0));
         }
     ASSERT_EQUAL_TOL(energy, context.getState(State::Energy).getPotentialEnergy(), 1e-5);
+
+    // Update the offsets and see if the energy is still correct.
+
+    force->setParticleParameterOffset(0, "p1", 0, 2.0, 0.6, 0.6);
+    force->setParticleParameterOffset(1, "p2", 1, 1.1, 1.1, 2.1);
+    force->setExceptionParameterOffset(0, "p1", 1, 0.4, 0.4, 1.4);
+    force->updateParametersInContext(context);
+    particleCharge = {0.0+2.0*0.5, 1.0+1.1*1.5, -1.0, 0.5};
+    particleSigma = {1.0+0.6*0.5, 0.5+1.1*1.5, 2.0, 2.0};
+    particleEpsilon = {0.5+0.6*0.5, 0.6+2.1*1.5, 0.7, 0.8};
+    for (int i = 0; i < 4; i++)
+        for (int j = i+1; j < 4; j++) {
+            pairChargeProd[i][j] = particleCharge[i]*particleCharge[j];
+            pairSigma[i][j] = 0.5*(particleSigma[i]+particleSigma[j]);
+            pairEpsilon[i][j] = sqrt(particleEpsilon[i]*particleEpsilon[j]);
+        }
+    pairChargeProd[0][3] = 0.0;
+    pairSigma[0][3] = 1.0;
+    pairEpsilon[0][3] = 0.0;
+    pairChargeProd[2][3] = 0.5+0.4*0.5;
+    pairSigma[2][3] = 1.0+0.4*0.5;
+    pairEpsilon[2][3] = 1.5+1.4*0.5;
+    pairChargeProd[0][1] = 1.0;
+    pairSigma[0][1] = 1.5;
+    pairEpsilon[0][1] = 1.0;
+    energy = 0.0;
+    for (int i = 0; i < 4; i++)
+        for (int j = i+1; j < 4; j++) {
+            double dist = j-i;
+            double x = pairSigma[i][j]/dist;
+            energy += ONE_4PI_EPS0*pairChargeProd[i][j]/dist + 4.0*pairEpsilon[i][j]*(pow(x, 12.0)-pow(x, 6.0));
+        }
+    ASSERT_EQUAL_TOL(energy, context.getState(State::Energy).getPotentialEnergy(), 1e-5);
+}
+
+void testEwaldExceptions() {
+    // Create a minimal system using LJPME.
+
+    System system;
+    for (int i = 0; i < 4; i++)
+        system.addParticle(1.0);
+    system.setDefaultPeriodicBoxVectors(Vec3(2, 0, 0), Vec3(0, 2, 0), Vec3(0, 0, 2));
+    NonbondedForce* force = new NonbondedForce();
+    system.addForce(force);
+    force->setNonbondedMethod(NonbondedForce::LJPME);
+    force->setCutoffDistance(1.0);
+    force->addParticle(1.0, 0.5, 1.0);
+    force->addParticle(1.0, 0.5, 1.0);
+    force->addParticle(-1.0, 0.5, 1.0);
+    force->addParticle(-1.0, 0.5, 1.0);
+    vector<Vec3> positions = {
+        Vec3(0, 0, 0),
+        Vec3(1.5, 0, 0),
+        Vec3(0, 0.5, 0.5),
+        Vec3(0.2, 1.3, 0)
+    };
+    VerletIntegrator integrator(0.001);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    
+    // Compute the energy.
+    
+    double e1 = context.getState(State::Energy).getPotentialEnergy();
+
+    // Add a periodic exception and see if the energy changes by the correct amount.
+
+    force->addException(0, 1, 0.2, 0.8, 2.0);
+    force->setExceptionsUsePeriodicBoundaryConditions(true);
+    context.reinitialize(true);
+    double e2 = context.getState(State::Energy).getPotentialEnergy();
+    double r = 0.5;
+    double expectedChange = ONE_4PI_EPS0*(0.2-1.0)/r + 4*2.0*(pow(0.8/r, 12)-pow(0.8/r, 6)) - 4*1.0*(pow(0.5/r, 12)-pow(0.5/r, 6));
+    ASSERT_EQUAL_TOL(expectedChange, e2-e1, 1e-5);
+}
+
+void testDirectAndReciprocal() {
+    // Create a minimal system with direct space and reciprocal space in different force groups.
+
+    System system;
+    for (int i = 0; i < 4; i++)
+        system.addParticle(1.0);
+    system.setDefaultPeriodicBoxVectors(Vec3(2, 0, 0), Vec3(0, 2, 0), Vec3(0, 0, 2));
+    NonbondedForce* force = new NonbondedForce();
+    system.addForce(force);
+    force->setNonbondedMethod(NonbondedForce::PME);
+    force->setCutoffDistance(1.0);
+    force->setReciprocalSpaceForceGroup(1);
+    force->addParticle(1.0, 0.5, 1.0);
+    force->addParticle(1.0, 0.5, 1.0);
+    force->addParticle(-1.0, 0.5, 1.0);
+    force->addParticle(-1.0, 0.5, 1.0);
+    force->addException(0, 2, -2.0, 0.5, 3.0);
+    vector<Vec3> positions = {
+        Vec3(0, 0, 0),
+        Vec3(1.5, 0, 0),
+        Vec3(0, 0.5, 0.5),
+        Vec3(0.2, 1.3, 0)
+    };
+    VerletIntegrator integrator(0.001);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    
+    // Compute the direct and reciprocal space energies together and separately.
+    
+    double e1 = context.getState(State::Energy).getPotentialEnergy();
+    double e2 = context.getState(State::Energy, true, 1<<0).getPotentialEnergy();
+    double e3 = context.getState(State::Energy, true, 1<<1).getPotentialEnergy();
+    ASSERT_EQUAL_TOL(e1, e2+e3, 1e-5);
+    ASSERT(e2 != 0);
+    ASSERT(e3 != 0);
+    
+    // Completely disable the direct space calculation.
+    
+    force->setIncludeDirectSpace(false);
+    context.reinitialize(true);
+    double e4 = context.getState(State::Energy).getPotentialEnergy();
+    ASSERT_EQUAL_TOL(e3, e4, 1e-5);
+}
+
+void testParallelComputation(NonbondedForce::NonbondedMethod method) {
+    System system;
+    const int numParticles = 200;
+    for (int i = 0; i < numParticles; i++)
+        system.addParticle(1.0);
+    NonbondedForce* force = new NonbondedForce();
+    for (int i = 0; i < numParticles; i++)
+        force->addParticle(i%2-0.5, 0.5, 1.0);
+    force->setNonbondedMethod(method);
+    system.addForce(force);
+    system.setDefaultPeriodicBoxVectors(Vec3(5,0,0), Vec3(0,5,0), Vec3(0,0,5));
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    vector<Vec3> positions(numParticles);
+    for (int i = 0; i < numParticles; i++)
+        positions[i] = Vec3(5*genrand_real2(sfmt), 5*genrand_real2(sfmt), 5*genrand_real2(sfmt));
+    force->addGlobalParameter("scale", 0.5);
+    for (int i = 0; i < numParticles; ++i)
+        for (int j = 0; j < i; ++j) {
+            Vec3 delta = positions[i]-positions[j];
+            if (delta.dot(delta) < 0.1) {
+                force->addException(i, j, 0, 1, 0);
+            }
+            else if (delta.dot(delta) < 0.2) {
+                int index = force->addException(i, j, 0.5, 1, 1.0);
+                force->addExceptionParameterOffset("scale", index, 0.5, 0.4, 0.3);
+            }
+        }
+    
+    // Create two contexts, one with a single device and one with two devices.
+    
+    VerletIntegrator integrator1(0.01);
+    Context context1(system, integrator1, platform);
+    context1.setPositions(positions);
+    State state1 = context1.getState(State::Forces | State::Energy);
+    VerletIntegrator integrator2(0.01);
+    string deviceIndex = platform.getPropertyValue(context1, "DeviceIndex");
+    map<string, string> props;
+    props["DeviceIndex"] = deviceIndex+","+deviceIndex;
+    Context context2(system, integrator2, platform, props);
+    context2.setPositions(positions);
+    State state2 = context2.getState(State::Forces | State::Energy);
+    
+    // See if they agree.
+    
+    ASSERT_EQUAL_TOL(state1.getPotentialEnergy(), state2.getPotentialEnergy(), 1e-5);
+    for (int i = 0; i < numParticles; i++)
+        ASSERT_EQUAL_VEC(state1.getForces()[i], state2.getForces()[i], 1e-5);
+    
+    // Modify some parameters and see if they still agree.
+
+    for (int i = 0; i < numParticles; i += 5) {
+        double charge, sigma, epsilon;
+        force->getParticleParameters(i, charge, sigma, epsilon);
+        force->setParticleParameters(i, 0.9*charge, sigma, epsilon);
+    }
+    for (int i = force->getNumExceptions()/2-10; i < force->getNumExceptions()/2+10; i++) {
+        int p1, p2;
+        double charge, sigma, epsilon;
+        force->getExceptionParameters(i, p1, p2, charge, sigma, epsilon);
+        if (epsilon != 0)
+            force->setExceptionParameters(i, p1, p2, charge, sigma, 2*epsilon);
+    }
+    force->updateParametersInContext(context1);
+    force->updateParametersInContext(context2);
+    state1 = context1.getState(State::Forces | State::Energy);
+    state2 = context2.getState(State::Forces | State::Energy);
+    ASSERT_EQUAL_TOL(state1.getPotentialEnergy(), state2.getPotentialEnergy(), 1e-5);
+    for (int i = 0; i < numParticles; i++)
+        ASSERT_EQUAL_VEC(state1.getForces()[i], state2.getForces()[i], 1e-5);
+}
+
+void testReordering() {
+    // Check that reordering of atoms doesn't alter their positions.
+    
+    const int numParticles = 200;
+    System system;
+    system.setDefaultPeriodicBoxVectors(Vec3(6, 0, 0), Vec3(2.1, 6, 0), Vec3(-1.5, -0.5, 6));
+    NonbondedForce *nonbonded = new NonbondedForce();
+    nonbonded->setNonbondedMethod(NonbondedForce::PME);
+    system.addForce(nonbonded);
+    vector<Vec3> positions;
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+    for (int i = 0; i < numParticles; i++) {
+        system.addParticle(1.0);
+        nonbonded->addParticle(0.0, 0.0, 0.0);
+        positions.push_back(Vec3(genrand_real2(sfmt)-0.5, genrand_real2(sfmt)-0.5, genrand_real2(sfmt)-0.5)*20);
+    }
+    VerletIntegrator integrator(0.001);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    integrator.step(1);
+    State state = context.getState(State::Positions | State::Velocities);
+    double tol = (platform.getPropertyValue(context, "Precision") == "single" ? 1e-6 : 1e-12);
+    for (int i = 0; i < numParticles; i++) {
+        ASSERT_EQUAL_VEC(positions[i], state.getPositions()[i], tol);
+    }
 }
 
 void runPlatformTests();
@@ -805,14 +1254,19 @@ int main(int argc, char* argv[]) {
         testCutoff();
         testCutoff14();
         testPeriodic();
+        testPeriodicExceptions();
         testTriclinic();
         testLargeSystem();
         testDispersionCorrection();
         testChangingParameters();
+        testChangingSubsetOfParameters();
+        testChangingParametersWithoutLJ();
         testSwitchingFunction(NonbondedForce::CutoffNonPeriodic);
         testSwitchingFunction(NonbondedForce::PME);
         testTwoForces();
         testParameterOffsets();
+        testEwaldExceptions();
+        testDirectAndReciprocal();
         runPlatformTests();
     }
     catch(const exception& e) {

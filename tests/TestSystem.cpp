@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2015 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -54,7 +52,7 @@ void testCreateSystem() {
     ASSERT_EQUAL(numParticles, system.getNumParticles());
     for (int i = 0; i < numParticles; i++) {
         double mass = (i == 5 ? 100.0 : 1.0+0.1*i);
-        ASSERT_EQUAL(mass, system.getParticleMass(i));
+        ASSERT_EQUAL_TOL(mass, system.getParticleMass(i), 1e-15);
     }
     
     // Test adding, removing, and modifying constraints.

@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2014 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -43,6 +41,7 @@ void testSerialization() {
 
     GBSAOBCForce force;
     force.setForceGroup(3);
+    force.setName("custom name");
     force.setNonbondedMethod(GBSAOBCForce::CutoffPeriodic);
     force.setCutoffDistance(2.0);
     force.setSoluteDielectric(5.1);
@@ -62,6 +61,7 @@ void testSerialization() {
 
     GBSAOBCForce& force2 = *copy;
     ASSERT_EQUAL(force.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force.getName(), force2.getName());
     ASSERT_EQUAL(force.getNonbondedMethod(), force2.getNonbondedMethod());
     ASSERT_EQUAL(force.getCutoffDistance(), force2.getCutoffDistance());
     ASSERT_EQUAL(force.getSoluteDielectric(), force2.getSoluteDielectric());

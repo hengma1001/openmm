@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build swig imput file from xml encoded header files (see gccxml)."""
+"""Build swig input file from xml encoded header files (see gccxml)."""
 __author__ = "Randall J. Radmer"
 __version__ = "1.0"
 
@@ -9,8 +9,6 @@ import time
 import getopt
 import re
 import xml.etree.ElementTree as etree
-from distutils.version import LooseVersion
-import copy
 
 try:
     from html.parser import HTMLParser
@@ -19,7 +17,16 @@ except ImportError:
     from HTMLParser import HTMLParser
 
 INDENT = "   "
-docTags = {'emphasis':'i', 'bold':'b', 'itemizedlist':'ul', 'listitem':'li', 'preformatted':'pre', 'computeroutput':'tt', 'subscript':'sub'}
+docTags = {'emphasis':'i', 'bold':'b', 'itemizedlist':'ul', 'listitem':'li', 'preformatted':'pre', 'computeroutput':'tt', 
+           'superscript': 'sup', 'subscript':'sub', 'verbatim': 'verbatim'}
+typeSubstitutions = {'double':'float', 'long long':'int', 'string':'str'}
+vectorPattern = re.compile("vector\<(.*)>")
+setPattern = re.compile("set\<(.*)>")
+mapPattern = re.compile("map\<(.*)\,(.*)>")
+pairPattern = re.compile("pair\<(.*)\,(.*)>")
+
+def is_method_abstract(argstring):
+    return argstring.split(")")[-1].find("=0") >= 0
 
 def striphtmltags(s):
     """Strip a couple html tags used inside docstrings in the C++ source
@@ -74,6 +81,8 @@ def getNodeText(node):
             s = "%s%s\n\n" % (s, getNodeText(n))
         elif n.tag == "ref":
             s = "%s%s" % (s, getNodeText(n))
+        elif n.tag == "ulink":
+            s = "%s`%s <%s>`_" % (s, getNodeText(n), n.attrib['url'])
         elif n.tag == "xrefsect":
             title = n.find("xreftitle")
             description = n.find("xrefdescription")
@@ -95,7 +104,7 @@ def getText(subNodePath, node):
             s = "%s\n\n" % s
     return s.strip()
 
-OPENMM_RE_PATTERN=re.compile("(.*)OpenMM:[a-zA-Z:]*:(.*)")
+OPENMM_RE_PATTERN=re.compile("(.*)OpenMM:[a-zA-Z0-9:]*:(.*)")
 def stripOpenmmPrefix(name, rePattern=OPENMM_RE_PATTERN):
     try:
         m=rePattern.search(name)
@@ -104,6 +113,11 @@ def stripOpenmmPrefix(name, rePattern=OPENMM_RE_PATTERN):
         return rValue
     except:
         return name
+
+def stripClassPrefix(className):
+    if className.startswith("OpenMM::"):
+        className = className[8:]
+    return className
 
 def findNodes(parent, path, **args):
     nodes = []
@@ -124,6 +138,7 @@ def getClassMethodList(classNode, skipMethods):
         for memberNode in findNodes(section, "memberdef", kind="function", prot="public"):
             methDefinition = getText("definition", memberNode)
             shortMethDefinition=stripOpenmmPrefix(methDefinition)
+            shortMethDefinition = shortMethDefinition.replace(' &', '&')
             methName=shortMethDefinition.split()[-1]
             if (shortClassName, methName) in skipMethods: continue
             numParams=len(findNodes(memberNode, 'param'))
@@ -155,13 +170,29 @@ def docstringTypemap(cpptype):
     This doesn't need to be perfectly accurate -- it's not used for generating
     the actual swig wrapper code. It's only used for generating the docstrings.
     """
-    pytype = cpptype
+    pytype = cpptype.strip()
     if pytype.startswith('const '):
         pytype = pytype[6:]
     if pytype.startswith('std::'):
         pytype = pytype[5:]
     pytype = pytype.strip('&')
-    return pytype.strip()
+    pytype = pytype.strip('*')
+    pytype = pytype.strip()
+    if pytype in typeSubstitutions:
+        pytype = typeSubstitutions[pytype]
+    match = vectorPattern.match(pytype)
+    if match is not None:
+        pytype = f'Sequence[{docstringTypemap(match[1])}]'
+    match = setPattern.match(pytype)
+    if match is not None:
+        pytype = f'set[{docstringTypemap(match[1])}]'
+    match = mapPattern.match(pytype)
+    if match is not None:
+        pytype = f'Mapping[{docstringTypemap(match[1])}, {docstringTypemap(match[2])}]'
+    match = pairPattern.match(pytype)
+    if match is not None:
+        pytype = f'tuple[{docstringTypemap(match[1])}, {docstringTypemap(match[2])}]'
+    return pytype
 
 
 class SwigInputBuilder:
@@ -175,7 +206,6 @@ class SwigInputBuilder:
                  skipAdditionalMethods=[],
                  SWIG_VERSION='3.0.2'):
         self.nodeByID={}
-        self.SWIG_COMPACT_ARGUMENTS = LooseVersion(SWIG_VERSION) < LooseVersion('3.0.5')
 
         self.configModule = __import__(os.path.splitext(configFilename)[0])
 
@@ -188,7 +218,7 @@ class SwigInputBuilder:
 
         # Read all the XML files and merge them into a single document.
         self.doc = etree.ElementTree(etree.Element('root'))
-        for file in os.listdir(inputDirname):
+        for file in sorted(os.listdir(inputDirname)):
             if file.lower().endswith('xml'):
                 root = etree.parse(os.path.join(inputDirname, file)).getroot()
                 for node in root:
@@ -248,6 +278,7 @@ class SwigInputBuilder:
         forceSubclassList = []
         integratorSubclassList = []
         tabulatedFunctionSubclassList = []
+        coordinateTransformationSubclassList = []
         for classNode in findNodes(self.doc.getroot(), "compounddef", kind="class", prot="public"):
             className = getText("compoundname", classNode)
             shortClassName=stripOpenmmPrefix(className)
@@ -260,17 +291,21 @@ class SwigInputBuilder:
                     baseName = getText("compoundname", baseNode)
                     if baseName == 'OpenMM::Force':
                         forceSubclassList.append(shortClassName)
-                    elif baseName == 'OpenMM::Integrator':
+                    elif baseName in ('OpenMM::Integrator', 'OpenMM::DrudeIntegrator'):
                         integratorSubclassList.append(shortClassName)
                     elif baseName == 'OpenMM::TabulatedFunction':
                         tabulatedFunctionSubclassList.append(shortClassName)
+                    elif baseName == 'OpenMM::ATMForce::CoordinateTransformation':
+                        coordinateTransformationSubclassList.append(shortClassName)
+        # We need to include subclasses of DrudeIntegrator, but not DrudeIntegrator itself.
+        integratorSubclassList.remove('DrudeIntegrator')
 
         self.fOut.write("%factory(OpenMM::Force& OpenMM::System::getForce")
         for name in sorted(forceSubclassList):
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
 
-        self.fOut.write("%factory(OpenMM::Force* OpenMM::Force::__copy__")
+        self.fOut.write("%factory(OpenMM::Force* OpenMM_XmlSerializer__cloneForce")
         for name in sorted(forceSubclassList):
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
@@ -285,7 +320,7 @@ class SwigInputBuilder:
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
 
-        self.fOut.write("%factory(OpenMM::Integrator* OpenMM::Integrator::__copy__")
+        self.fOut.write("%factory(OpenMM::Integrator* OpenMM_XmlSerializer__cloneIntegrator")
         for name in sorted(integratorSubclassList):
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
@@ -305,7 +340,7 @@ class SwigInputBuilder:
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
 
-        self.fOut.write("%factory(OpenMM::TabulatedFunction* OpenMM::TabulatedFunction::__copy__")
+        self.fOut.write("%factory(OpenMM::TabulatedFunction* OpenMM_XmlSerializer__cloneTabulatedFunction")
         for name in sorted(tabulatedFunctionSubclassList):
             self.fOut.write(",\n         OpenMM::%s" % name)
         self.fOut.write(");\n\n")
@@ -313,6 +348,11 @@ class SwigInputBuilder:
         self.fOut.write("%factory(OpenMM::TabulatedFunction* OpenMM_XmlSerializer__deserializeTabulatedFunction")
         for name in sorted(tabulatedFunctionSubclassList):
             self.fOut.write(",\n         OpenMM::%s" % name)
+        self.fOut.write(");\n\n")
+
+        self.fOut.write("%factory(OpenMM::ATMForce::CoordinateTransformation& OpenMM::ATMForce::getParticleTransformation")
+        for name in sorted(coordinateTransformationSubclassList):
+            self.fOut.write(",\n         OpenMM::ATMForce::%s" % name)
         self.fOut.write(");\n\n")
 
         for classNode in self._orderedClassNodes:
@@ -356,7 +396,7 @@ class SwigInputBuilder:
                 if isConstructors:
                     hasConstructor=True
 
-            className = stripOpenmmPrefix(getText("compoundname", classNode))
+            className = stripClassPrefix(getText("compoundname", classNode))
             # If has a constructor then tell swig tell to make a copy method
             if hasConstructor:
                 self.fOut.write("%%copyctor %s ;\n" % className)
@@ -366,7 +406,7 @@ class SwigInputBuilder:
     def writeClassDeclarations(self):
         self.fOut.write("\n/* Class Declarations */\n\n")
         for classNode in self._orderedClassNodes:
-            className = stripOpenmmPrefix(getText("compoundname", classNode))
+            className = stripClassPrefix(getText("compoundname", classNode))
             if self.fOutDocstring:
                 dNode = classNode.find('detaileddescription')
                 if dNode is not None:
@@ -380,14 +420,20 @@ class SwigInputBuilder:
 
             for baseNodePnt in findNodes(classNode, "basecompoundref", prot="public"):
                 if "refid" in baseNodePnt.attrib:
-                    baseName = stripOpenmmPrefix(getText(".", baseNodePnt))
+                    baseName = stripClassPrefix(getText(".", baseNodePnt))
                     self.fOut.write(" : public %s" % baseName)
             self.fOut.write(" {\n")
             self.fOut.write("public:\n")
+            self.writeInnerClasses(classNode)
             self.writeEnumerations(classNode)
             self.writeMethods(classNode)
             self.fOut.write("};\n\n")
         self.fOut.write("\n")
+
+    def writeInnerClasses(self, classNode):
+        for inner in findNodes(classNode, "innerclass", prot="public"):
+            name = getNodeText(inner).split("::")[-1];
+            self.fOut.write(f"  class {name};\n")
 
     def writeEnumerations(self, classNode):
         enumNodes = []
@@ -416,6 +462,7 @@ class SwigInputBuilder:
 
     def writeMethods(self, classNode):
         methodList=getClassMethodList(classNode, self.skipMethods)
+        fullClassName = getText("compoundname", classNode)
 
         #write only Constructors
         for items in methodList:
@@ -446,6 +493,7 @@ class SwigInputBuilder:
 
         #write only non Constructor and Destructor methods and python mods
         self.fOut.write("\n")
+        methodsWithOutputArgs = set()
         for items in methodList:
             clearOutput=""
             (shortClassName, memberNode,
@@ -479,6 +527,7 @@ class SwigInputBuilder:
                                         (INDENT, simpleType, pType, pName))
                         clearOutput = "%s%s%%clear %s %s;\n" \
                                      % (clearOutput, INDENT, pType, pName)
+                        methodsWithOutputArgs.add((shortClassName, methName))
 
             mArgsstring = getText("argsstring", memberNode)
             try:
@@ -503,31 +552,51 @@ class SwigInputBuilder:
             paramList = findNodes(memberNode, 'param')
 
             # write pythonprepend blocks
-            mArgsstring = getText("argsstring", memberNode)
+            if isConstructors:
+                mArgsstring = '' # specifying args to constructors seems to prevent append and prepend from working
+            else:
+                mArgsstring = getText("argsstring", memberNode)
             if self.fOutPythonprepend and \
                len(paramList) and \
-               mArgsstring.find('=0') < 0:
+               not is_method_abstract(mArgsstring):
                 text = '''
 %pythonprepend OpenMM::{shortClassName}::{methName}{mArgsstring} %{{{{{{0}}
 %}}}}'''.format(shortClassName=shortClassName, methName=methName, mArgsstring=mArgsstring)
                 textInside = ''
                 key = (shortClassName, methName)
                 for argNum in self.configModule.STEAL_OWNERSHIP.get(key, []):
-                    if self.SWIG_COMPACT_ARGUMENTS:
-                        argName = 'args[%s]' % argNum
-                    else:
-                        argName = getText('declname', paramList[argNum])
+                    argName = getText('declname', paramList[argNum])
 
                     textInside += '''
     if not {argName}.thisown:
         s = ("the %s object does not own its corresponding OpenMM object"
              % self.__class__.__name__)
         raise Exception(s)'''.format(argName=argName)
-                for argNum in self.configModule.REQUIRE_ORDERED_SET.get(key, []):
-                    if self.SWIG_COMPACT_ARGUMENTS:
-                        argName = 'args[%s]' % argNum
+
+
+                # Convert input arguments to the proper units, if specified.
+                if key not in methodsWithOutputArgs:
+                    if key in self.configModule.UNITS:
+                        argUnits=self.configModule.UNITS[key][1]
+                    elif ("*", methName) in self.configModule.UNITS:
+                        argUnits=self.configModule.UNITS[("*", methName)][1]
                     else:
-                        argName = getText('declname', paramList[argNum])
+                        argUnits = ()
+                    if len(argUnits) > 0 and isConstructors:
+                        textInside += '''
+    args = list(args)'''
+                    for i, units in enumerate(argUnits):
+                        if units is not None:
+                            if isConstructors:
+                                argName = 'args[%s]' % i
+                            else:
+                                argName = getText('declname', paramList[i])
+                            textInside += '''
+    if unit.is_quantity({argName}):
+        {argName} = {argName}.value_in_unit({units})'''.format(argName=argName, units=units)
+
+                for argNum in self.configModule.REQUIRE_ORDERED_SET.get(key, []):
+                    argName = getText('declname', paramList[argNum])
 
                     textInside += '''
     {argName} = list({argName})'''.format(argName=argName)
@@ -536,9 +605,10 @@ class SwigInputBuilder:
 
             # write pythonappend blocks
             if self.fOutPythonappend \
-               and mArgsstring.find('=0') < 0:
+               and not is_method_abstract(mArgsstring):
                 key = (shortClassName, methName)
-                #print "key %s %s \n" % (shortClassName, methName)
+                #sys.stdout.write("key %s %s \n" % (shortClassName, methName))
+
                 addText=''
                 returnType = getText("type", memberNode)
 
@@ -568,23 +638,20 @@ class SwigInputBuilder:
                                  % (addText, INDENT, valueUnits[0])
 
                 for vUnit in valueUnits[1]:
-                    if vUnit is not None:
+                    if vUnit is not None and key in methodsWithOutputArgs:
                         addText = "%s%sval[%s]=unit.Quantity(val[%s], %s)\n" \
                                      % (addText, INDENT, index, index, vUnit)
                     index+=1
 
                 if key in self.configModule.STEAL_OWNERSHIP:
                     for argNum in self.configModule.STEAL_OWNERSHIP[key]:
-                        if self.SWIG_COMPACT_ARGUMENTS:
-                            argName = 'args[%s]' % argNum
-                        else:
-                            argName = getText('declname', paramList[argNum])
+                        argName = getText('declname', paramList[argNum])
                         addText = "%s%s%s.thisown=0\n" \
                                 % (addText, INDENT, argName)
 
                 if addText:
                     self.fOutPythonappend.write("%pythonappend")
-                    self.fOutPythonappend.write(" OpenMM::%s::%s(" % key)
+                    self.fOutPythonappend.write(" %s::%s(" % (fullClassName, methName))
                     sepChar=''
                     outputIndex=0
                     for pNode in paramList:
@@ -592,8 +659,15 @@ class SwigInputBuilder:
                             pType = getText('type', pNode)
                         except IndexError:
                             pType = getText('type/ref', pNode)
+                        # parse default arguments
+                        try:
+                            defaultValue = getText('defval', pNode)
+                        except:
+                            defaultValue = ""
+                        if defaultValue != "":
+                            defaultValue = "=%s" %defaultValue
                         pName = getText('declname', pNode)
-                        self.fOutPythonappend.write("%s%s %s" % (sepChar, pType, pName))
+                        self.fOutPythonappend.write("%s%s %s%s" % (sepChar, pType, pName, defaultValue))
                         sepChar=', '
 
                         if pType.find('&')>=0 and \
@@ -683,6 +757,7 @@ class SwigInputBuilder:
         self.fOut.write("/* Swig input file,\n")
         self.fOut.write("%sgenerated by %s on %s\n*/\n\n\n"
                         % (INDENT, sys.argv[0], time.asctime()))
+        self.fOut.write("%include \"factory.i\"\n")
         self.fOut.write("\nnamespace OpenMM {\n\n")
         self.writeFactories()
         self.writeGlobalConstants()

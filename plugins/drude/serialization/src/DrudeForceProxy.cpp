@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMDrude                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2013 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -44,6 +42,8 @@ DrudeForceProxy::DrudeForceProxy() : SerializationProxy("DrudeForce") {
 void DrudeForceProxy::serialize(const void* object, SerializationNode& node) const {
     node.setIntProperty("version", 1);
     const DrudeForce& force = *reinterpret_cast<const DrudeForce*>(object);
+    node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     SerializationNode& particles = node.createChildNode("Particles");
     for (int i = 0; i < force.getNumParticles(); i++) {
         int p, p1, p2, p3, p4;
@@ -66,6 +66,8 @@ void* DrudeForceProxy::deserialize(const SerializationNode& node) const {
         throw OpenMMException("Unsupported version number");
     DrudeForce* force = new DrudeForce();
     try {
+        force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         const SerializationNode& particles = node.getChildNode("Particles");
         for (auto& particle : particles.getChildren())
             force->addParticle(particle.getIntProperty("p"), particle.getIntProperty("p1"), particle.getIntProperty("p2"), particle.getIntProperty("p3"), particle.getIntProperty("p4"),

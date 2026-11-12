@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010 Stanford University and the Authors.           *
+ * Portions copyright (c) 2010-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -35,7 +33,6 @@
 #include "ForceImpl.h"
 #include "openmm/MonteCarloAnisotropicBarostat.h"
 #include "openmm/Kernel.h"
-#include "sfmt/SFMT.h"
 #include <string>
 
 namespace OpenMM {
@@ -51,18 +48,18 @@ public:
     const MonteCarloAnisotropicBarostat& getOwner() const {
         return owner;
     }
-    void updateContextState(ContextImpl& context);
+    void updateContextState(ContextImpl& context, bool& forcesInvalid);
     double calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
         // This force doesn't apply forces to particles.
         return 0.0;
     }
     std::map<std::string, double> getDefaultParameters();
     std::vector<std::string> getKernelNames();
+    Vec3 computeCurrentPressure(ContextImpl& context);
 private:
     const MonteCarloAnisotropicBarostat& owner;
     int step, numAttempted[3], numAccepted[3];
     double volumeScale[3];
-    OpenMM_SFMT::SFMT random;
     Kernel kernel;
 };
 

@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2012-2017 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -70,8 +68,8 @@ private:
 
 /**
  * This is a VirtualSite that computes the particle location as a weighted average
- * of two other particle's locations.  Assuming the weights add up to 1, this means
- * the virtual site is on the line passing through the two particles.
+ * of two other particle's locations.  This means the virtual site is on the
+ * line passing through the two particles.
  */
 class OPENMM_EXPORT TwoParticleAverageSite : public VirtualSite {
 public:
@@ -81,8 +79,8 @@ public:
      * 
      * @param particle1    the index of the first particle
      * @param particle2    the index of the second particle
-     * @param weight1      the weight factor (between 0 and 1) for the first particle
-     * @param weight2      the weight factor (between 0 and 1) for the second particle
+     * @param weight1      the weight factor (typically between 0 and 1) for the first particle
+     * @param weight2      the weight factor (typically between 0 and 1) for the second particle
      */
     TwoParticleAverageSite(int particle1, int particle2, double weight1, double weight2);
     /**
@@ -98,8 +96,8 @@ private:
 
 /**
  * This is a VirtualSite that computes the particle location as a weighted average
- * of three other particle's locations.  Assuming the weights add up to 1, this means
- * the virtual site is in the plane of the three particles.
+ * of three other particle's locations.  This means the virtual site is in the
+ * plane of the three particles.
  */
 class OPENMM_EXPORT ThreeParticleAverageSite : public VirtualSite {
 public:
@@ -110,9 +108,9 @@ public:
      * @param particle1    the index of the first particle
      * @param particle2    the index of the second particle
      * @param particle3    the index of the third particle
-     * @param weight1      the weight factor (between 0 and 1) for the first particle
-     * @param weight2      the weight factor (between 0 and 1) for the second particle
-     * @param weight2      the weight factor (between 0 and 1) for the third particle
+     * @param weight1      the weight factor (typically between 0 and 1) for the first particle
+     * @param weight2      the weight factor (typically between 0 and 1) for the second particle
+     * @param weight3      the weight factor (typically between 0 and 1) for the third particle
      */
     ThreeParticleAverageSite(int particle1, int particle2, int particle3, double weight1, double weight2, double weight3);
     /**
@@ -136,7 +134,8 @@ private:
  * r<sub>1</sub> + w<sub>12</sub>r<sub>12</sub> + w<sub>13</sub>r<sub>13</sub> + w<sub>cross</sub>(r<sub>12</sub> x r<sub>13</sub>)
  * 
  * The three weight factors are user-specified.  This allows the virtual site location
- * to be out of the plane of the three particles.
+ * to be out of the plane of the three particles. Note that while w<sub>12</sub> and
+ * w<sub>13</sub> are unitless, w<sub>cross</sub> has units of inverse distance.
  */
 class OPENMM_EXPORT OutOfPlaneSite : public VirtualSite {
 public:
@@ -254,6 +253,66 @@ public:
 private:
     std::vector<double> originWeights, xWeights, yWeights;
     Vec3 localPosition;
+};
+
+/**
+ * This is a VirtualSite that applies a rotation and translation to the position of
+ * a single other particle.  It is useful for creating multiple copies of a molecule
+ * that are symmetrically arranged either with respect to each other or to the
+ * periodic box.
+ * 
+ * The transformation is defined by a rotation matrix R (specified by its rows Rx, Ry, and Rz).
+ * and a translation vector v.  The position r' of the virtual site is computed from the
+ * position r of the original particle as
+ * 
+ * r'<sub>x</sub> = Rx<sub>x</sub>r<sub>x</sub> + Rx<sub>y</sub>r<sub>y</sub> + Rx<sub>z</sub>r<sub>z</sub> + v<sub>x</sub>
+ * 
+ * r'<sub>x</sub> = Ry<sub>y</sub>r<sub>x</sub> + Ry<sub>y</sub>r<sub>y</sub> + Ry<sub>z</sub>r<sub>z</sub> + v<sub>y</sub>
+ * 
+ * r'<sub>x</sub> = Rz<sub>z</sub>r<sub>x</sub> + Rz<sub>y</sub>r<sub>y</sub> + Rz<sub>z</sub>r<sub>z</sub> + v<sub>z</sub>
+ * 
+ * It can be applied in two different modes.  When useBoxVectors is false the transformation
+ * is performed in Cartesian coordinates.  When useBoxVectors is true it is performed in
+ * fractional coordinates as defined by the periodic box, which means that v acts as a set
+ * of scale factors for the periodic box vectors.  This latter mode is convenient for building
+ * crystallographic unit cells composed of multiple symmetric molecules.  It should be used
+ * with care: if R represents a rotation by any angle other than 0 or 180 degrees, performing
+ * the rotation in fractional coordinates can distort the molecule.
+ */
+class OPENMM_EXPORT SymmetrySite : public VirtualSite {
+public:
+    /**
+     * Create a new SymmetrySite virtual site.
+     * 
+     * The arguments Rx, Ry, and Rz must form an orthogonal matrix (its transpose is its inverse).
+     * 
+     * @param particle       the index of the particle the site depends on
+     * @param Rx             the first row of the rotation matrix
+     * @param Ry             the second row of the rotation matrix
+     * @param Rz             the third row of the rotation matrix
+     * @param v              the offset vector
+     * @param useBoxVectors  specifies whether the transformation is performed in Cartesian or fractional coordinates
+     */
+    SymmetrySite(int particle, const Vec3& Rx, const Vec3& Ry, const Vec3& Rz, const Vec3& v, bool useBoxVectors);
+    /**
+     * Get the rotation matrix.
+     * 
+     * @param Rx             the first row of the rotation matrix
+     * @param Ry             the second row of the rotation matrix
+     * @param Rz             the third row of the rotation matrix
+     */
+    void getRotationMatrix(Vec3& Rx, Vec3& Ry, Vec3& Rz) const;
+    /**
+     * Get the offset vector.
+     */
+    const Vec3& getOffsetVector() const;
+    /**
+     * Get whether whether the transformation is performed in Cartesian or fractional coordinates.
+     */
+    bool getUseBoxVectors() const;
+private:
+    Vec3 Rx, Ry, Rz, v;
+    bool useBoxVectors;
 };
 
 } // namespace OpenMM

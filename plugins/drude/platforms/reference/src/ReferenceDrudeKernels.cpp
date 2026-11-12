@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2011-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2011-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -36,6 +34,7 @@
 #include "SimTKOpenMMUtilities.h"
 #include "ReferenceConstraints.h"
 #include "ReferenceVirtualSites.h"
+#include "ReferenceForce.h"
 #include <set>
 
 using namespace OpenMM;
@@ -43,47 +42,39 @@ using namespace std;
 
 static vector<Vec3>& extractPositions(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->positions);
+    return *data->positions;
 }
 
 static vector<Vec3>& extractVelocities(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->velocities);
+    return *data->velocities;
 }
 
 static vector<Vec3>& extractForces(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->forces);
+    return *data->forces;
+}
+
+static Vec3* extractBoxVectors(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return data->periodicBoxVectors;
 }
 
 static ReferenceConstraints& extractConstraints(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *(ReferenceConstraints*) data->constraints;
+    return *data->constraints;
+}
+
+static const ReferenceVirtualSites& extractVirtualSites(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return *data->virtualSites;
 }
 
 static double computeShiftedKineticEnergy(ContextImpl& context, vector<double>& inverseMasses, double timeShift) {
     const System& system = context.getSystem();
     int numParticles = system.getNumParticles();
-    vector<Vec3>& posData = extractPositions(context);
-    vector<Vec3>& velData = extractVelocities(context);
-    vector<Vec3>& forceData = extractForces(context);
-    
-    // Compute the shifted velocities.
-    
     vector<Vec3> shiftedVel(numParticles);
-    for (int i = 0; i < numParticles; ++i) {
-        if (inverseMasses[i] > 0)
-            shiftedVel[i] = velData[i]+forceData[i]*(timeShift*inverseMasses[i]);
-        else
-            shiftedVel[i] = velData[i];
-    }
-    
-    // Apply constraints to them.
-    
-    extractConstraints(context).applyToVelocities(posData, shiftedVel, inverseMasses, 1e-4);
-    
-    // Compute the kinetic energy.
-    
+    context.computeShiftedVelocities(timeShift, shiftedVel);
     double energy = 0.0;
     for (int i = 0; i < numParticles; ++i)
         if (inverseMasses[i] > 0)
@@ -116,6 +107,7 @@ void ReferenceCalcDrudeForceKernel::initialize(const System& system, const Drude
     pairThole.resize(numPairs);
     for (int i = 0; i < numPairs; i++)
         force.getScreenedPairParameters(i, pair1[i], pair2[i], pairThole[i]);
+    periodic = force.usesPeriodicBoundaryConditions();
 }
 
 double ReferenceCalcDrudeForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
@@ -183,6 +175,7 @@ double ReferenceCalcDrudeForceKernel::execute(ContextImpl& context, bool include
     // Compute the screened interaction between bonded dipoles.
     
     int numPairs = pair1.size();
+    Vec3* boxVectors = extractBoxVectors(context);
     for (int i = 0; i < numPairs; i++) {
         int dipole1 = pair1[i];
         int dipole2 = pair2[i];
@@ -194,8 +187,13 @@ double ReferenceCalcDrudeForceKernel::execute(ContextImpl& context, bool include
                 int p1 = dipole1Particles[j];
                 int p2 = dipole2Particles[k];
                 double chargeProduct = charge[dipole1]*charge[dipole2]*(j == k ? 1 : -1);
-                Vec3 delta = pos[p1]-pos[p2];
-                double r = sqrt(delta.dot(delta));
+                double deltaR[ReferenceForce::LastDeltaRIndex];
+                if (periodic)
+                    ReferenceForce::getDeltaRPeriodic(pos[p2], pos[p1], boxVectors, deltaR);
+                else
+                    ReferenceForce::getDeltaR(pos[p2], pos[p1], deltaR);
+                Vec3 delta(deltaR[ReferenceForce::XIndex], deltaR[ReferenceForce::YIndex], deltaR[ReferenceForce::ZIndex]);
+                double r = deltaR[ReferenceForce::RIndex];
                 double u = r*uscale;
                 double screening = 1.0 - (1.0+0.5*u)*exp(-u);
                 energy += ONE_4PI_EPS0*chargeProduct*screening/r;
@@ -257,72 +255,85 @@ void ReferenceIntegrateDrudeLangevinStepKernel::initialize(const System& system,
 }
 
 void ReferenceIntegrateDrudeLangevinStepKernel::execute(ContextImpl& context, const DrudeLangevinIntegrator& integrator) {
+    int numParticles = particleInvMass.size();
+    vector<Vec3> xPrime(numParticles);
+    vector<Vec3> oldx(numParticles);
     vector<Vec3>& pos = extractPositions(context);
     vector<Vec3>& vel = extractVelocities(context);
     vector<Vec3>& force = extractForces(context);
-    
-    // Update velocities of ordinary particles.
-    
-    const double vscale = exp(-integrator.getStepSize()*integrator.getFriction());
-    const double fscale = (1-vscale)/integrator.getFriction();
+    const double dt = integrator.getStepSize();
+    const double halfdt = 0.5*dt;
     const double kT = BOLTZ*integrator.getTemperature();
-    const double noisescale = sqrt(2*kT*integrator.getFriction())*sqrt(0.5*(1-vscale*vscale)/integrator.getFriction());
-    for (int index : normalParticles) {
-        double invMass = particleInvMass[index];
-        if (invMass != 0.0) {
-            double sqrtInvMass = sqrt(invMass);
-            for (int j = 0; j < 3; j++)
-                vel[index][j] = vscale*vel[index][j] + fscale*invMass*force[index][j] + noisescale*sqrtInvMass*SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
-        }
-    }
-    
-    // Update velocities of Drude particle pairs.
-    
-    const double vscaleDrude = exp(-integrator.getStepSize()*integrator.getDrudeFriction());
-    const double fscaleDrude = (1-vscaleDrude)/integrator.getDrudeFriction();
+    const double friction = integrator.getFriction();
+    const double vscale = exp(-dt*friction);
+    const double noisescale = sqrt(kT*(1-vscale*vscale));
     const double kTDrude = BOLTZ*integrator.getDrudeTemperature();
-    const double noisescaleDrude = sqrt(2*kTDrude*integrator.getDrudeFriction())*sqrt(0.5*(1-vscaleDrude*vscaleDrude)/integrator.getDrudeFriction());
-    for (int i = 0; i < (int) pairParticles.size(); i++) {
-        int p1 = pairParticles[i].first;
-        int p2 = pairParticles[i].second;
-        double mass1fract = pairInvTotalMass[i]/particleInvMass[p1];
-        double mass2fract = pairInvTotalMass[i]/particleInvMass[p2];
-        double sqrtInvTotalMass = sqrt(pairInvTotalMass[i]);
-        double sqrtInvReducedMass = sqrt(pairInvReducedMass[i]);
-        Vec3 cmVel = vel[p1]*mass1fract+vel[p2]*mass2fract;
-        Vec3 relVel = vel[p2]-vel[p1];
-        Vec3 cmForce = force[p1]+force[p2];
-        Vec3 relForce = force[p2]*mass1fract - force[p1]*mass2fract;
-        for (int j = 0; j < 3; j++) {
-            cmVel[j] = vscale*cmVel[j] + fscale*pairInvTotalMass[i]*cmForce[j] + noisescale*sqrtInvTotalMass*SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
-            relVel[j] = vscaleDrude*relVel[j] + fscaleDrude*pairInvReducedMass[i]*relForce[j] + noisescaleDrude*sqrtInvReducedMass*SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
-        }
-        vel[p1] = cmVel-relVel*mass2fract;
-        vel[p2] = cmVel+relVel*mass1fract;
-    }
+    const double frictionDrude = integrator.getDrudeFriction();
+    const double vscaleDrude = exp(-dt*frictionDrude);
+    const double noisescaleDrude = sqrt(kTDrude*(1-vscaleDrude*vscaleDrude));
 
-    // Update the particle positions.
-    
-    int numParticles = particleInvMass.size();
-    vector<Vec3> xPrime(numParticles);
-    double dt = integrator.getStepSize();
+    // Perform the first part of integration: velocity step.
+
     for (int i = 0; i < numParticles; i++)
         if (particleInvMass[i] != 0.0)
-            xPrime[i] = pos[i]+vel[i]*dt;
-    
-    // Apply constraints.
-    
-    extractConstraints(context).apply(pos, xPrime, particleInvMass, integrator.getConstraintTolerance());
-    
-    // Record the constrained positions and velocities.
-    
-    double dtInv = 1.0/dt;
-    for (int i = 0; i < numParticles; i++) {
+            vel[i] += dt*particleInvMass[i]*force[i];
+
+    // Apply velocity constraints.
+
+    extractConstraints(context).applyToVelocities(pos, vel, particleInvMass, integrator.getConstraintTolerance());
+
+    // Perform the second part of integration: position half step, then interact with heat bath,
+    // then another position half step.
+
+    for (int i = 0; i < numParticles; i++)
+        if (particleInvMass[i] != 0.0)
+            xPrime[i] = pos[i] + vel[i]*halfdt;
+    for (int i : normalParticles) {
         if (particleInvMass[i] != 0.0) {
-            vel[i] = (xPrime[i]-pos[i])*dtInv;
-            pos[i] = xPrime[i];
+            vel[i] = vscale*vel[i] + noisescale*sqrt(particleInvMass[i])*Vec3(
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber());
         }
     }
+    for (int i = 0; i < pairParticles.size(); i++) {
+        if (pairInvTotalMass[i] != 0.0) {
+            int p1 = pairParticles[i].first;
+            int p2 = pairParticles[i].second;
+            double mass1fract = pairInvTotalMass[i]/particleInvMass[p1];
+            double mass2fract = pairInvTotalMass[i]/particleInvMass[p2];
+            Vec3 cmVel = vel[p1]*mass1fract+vel[p2]*mass2fract;
+            Vec3 relVel = vel[p2]-vel[p1];
+            cmVel = vscale*cmVel + noisescale*sqrt(pairInvTotalMass[i])*Vec3(
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber());
+            relVel = vscaleDrude*relVel + noisescaleDrude*sqrt(pairInvReducedMass[i])*Vec3(
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber(),
+                    SimTKOpenMMUtilities::getNormallyDistributedRandomNumber());
+            vel[p1] = cmVel-relVel*mass2fract;
+            vel[p2] = cmVel+relVel*mass1fract;
+        }
+    }
+    for (int i = 0; i < numParticles; i++)
+        if (particleInvMass[i] != 0.0) {
+            xPrime[i] += vel[i]*halfdt;
+            oldx[i] = xPrime[i];
+        }
+
+    // Apply position constraints.
+
+    extractConstraints(context).apply(pos, xPrime, particleInvMass, integrator.getConstraintTolerance());
+
+    // Perform the third part of integration: apply constraint forces to velocities, then record
+    // the constrained positions.
+
+    for (int i = 0; i < numParticles; i++)
+        if (particleInvMass[i] != 0.0) {
+            vel[i] += (xPrime[i]-oldx[i])/dt;
+            pos[i] = xPrime[i];
+        }
 
     // Apply hard wall constraints.
 
@@ -380,8 +391,12 @@ void ReferenceIntegrateDrudeLangevinStepKernel::execute(ContextImpl& context, co
                     double vBond = hardwallscaleDrude/sqrt(mass1);
                     dotvr1 = -dotvr1*vBond*mass2*invTotalMass/abs(dotvr1);
                     dotvr2 = -dotvr2*vBond*mass1*invTotalMass/abs(dotvr2);
-                    double dr1 = -deltaR*mass2*invTotalMass + deltaT*dotvr1;
-                    double dr2 = deltaR*mass1*invTotalMass + deltaT*dotvr2;
+                    double dr1 = -deltaR*mass2*invTotalMass;
+                    double dr2 = deltaR*mass1*invTotalMass;
+                    if (dotvr1-dotvr2 < 0) {
+                        dr1 += deltaT*dotvr1;
+                        dr2 += deltaT*dotvr2;
+                    }
                     dotvr1 += vbCMass;
                     dotvr2 += vbCMass;
                     pos[p1] += bondDir*dr1;
@@ -392,7 +407,7 @@ void ReferenceIntegrateDrudeLangevinStepKernel::execute(ContextImpl& context, co
             }
         }
     }
-    ReferenceVirtualSites::computePositions(context.getSystem(), pos);
+    extractVirtualSites(context).computePositions(context.getSystem(), pos, extractBoxVectors(context));
     data.time += integrator.getStepSize();
     data.stepCount++;
 }
@@ -402,18 +417,29 @@ double ReferenceIntegrateDrudeLangevinStepKernel::computeKineticEnergy(ContextIm
 }
 
 ReferenceIntegrateDrudeSCFStepKernel::~ReferenceIntegrateDrudeSCFStepKernel() {
-    if (minimizerPos != NULL)
-        lbfgs_free(minimizerPos);
 }
 
 void ReferenceIntegrateDrudeSCFStepKernel::initialize(const System& system, const DrudeSCFIntegrator& integrator, const DrudeForce& force) {
-    // Identify Drude particles.
-    
-    for (int i = 0; i < force.getNumParticles(); i++) {
-        int p, p1, p2, p3, p4;
+    // Record information about the drude particles.
+
+    int numDrude = force.getNumParticles();
+    particle.resize(numDrude);
+    particle1.resize(numDrude);
+    particle2.resize(numDrude);
+    particle3.resize(numDrude);
+    particle4.resize(numDrude);
+    k1.resize(numDrude);
+    k2.resize(numDrude);
+    k3.resize(numDrude);
+    for (int i = 0; i < numDrude; i++) {
         double charge, polarizability, aniso12, aniso34;
-        force.getParticleParameters(i, p, p1, p2, p3, p4, charge, polarizability, aniso12, aniso34);
-        drudeParticles.push_back(p);
+        force.getParticleParameters(i, particle[i], particle1[i], particle2[i], particle3[i], particle4[i], charge, polarizability, aniso12, aniso34);
+        double a1 = (particle2[i] == -1 ? 1 : aniso12);
+        double a2 = (particle3[i] == -1 || particle4[i] == -1 ? 1 : aniso34);
+        double a3 = 3-a1-a2;
+        k3[i] = ONE_4PI_EPS0*charge*charge/(polarizability*a3);
+        k1[i] = ONE_4PI_EPS0*charge*charge/(polarizability*a1) - k3[i];
+        k2[i] = ONE_4PI_EPS0*charge*charge/(polarizability*a2) - k3[i];
     }
 
     // Record particle masses.
@@ -424,16 +450,6 @@ void ReferenceIntegrateDrudeSCFStepKernel::initialize(const System& system, cons
         particleMass.push_back(mass);
         particleInvMass.push_back(mass == 0.0 ? 0.0 : 1.0/mass);
     }
-    
-    // Initialize the energy minimizer.
-    
-    minimizerPos = lbfgs_malloc(drudeParticles.size()*3);
-    if (minimizerPos == NULL)
-        throw OpenMMException("DrudeSCFIntegrator: Failed to allocate memory");
-    lbfgs_parameter_init(&minimizerParams);
-    minimizerParams.linesearch = LBFGS_LINESEARCH_BACKTRACKING_STRONG_WOLFE;
-    if (sizeof(double) < 8)
-        minimizerParams.xtol = 1e-7;
 }
 
 void ReferenceIntegrateDrudeSCFStepKernel::execute(ContextImpl& context, const DrudeSCFIntegrator& integrator) {
@@ -469,7 +485,7 @@ void ReferenceIntegrateDrudeSCFStepKernel::execute(ContextImpl& context, const D
     
     // Update the positions of virtual sites and Drude particles.
     
-    ReferenceVirtualSites::computePositions(context.getSystem(), pos);
+    extractVirtualSites(context).computePositions(context.getSystem(), pos, extractBoxVectors(context));
     minimize(context, integrator.getMinimizationErrorTolerance());
     data.time += integrator.getStepSize();
     data.stepCount++;
@@ -479,54 +495,40 @@ double ReferenceIntegrateDrudeSCFStepKernel::computeKineticEnergy(ContextImpl& c
     return computeShiftedKineticEnergy(context, particleInvMass, 0.5*integrator.getStepSize());
 }
 
-struct MinimizerData {
-    ContextImpl& context;
-    vector<int>& drudeParticles;
-    MinimizerData(ContextImpl& context, vector<int>& drudeParticles) : context(context), drudeParticles(drudeParticles) {}
-};
-
-static lbfgsfloatval_t evaluate(void *instance, const lbfgsfloatval_t *x, lbfgsfloatval_t *g, const int n, const lbfgsfloatval_t step) {
-    MinimizerData* data = reinterpret_cast<MinimizerData*>(instance);
-    ContextImpl& context = data->context;
-    vector<int>& drudeParticles = data->drudeParticles;
-    int numDrudeParticles = drudeParticles.size();
-
-    // Compute the force and energy for this configuration.
-
+void ReferenceIntegrateDrudeSCFStepKernel::minimize(ContextImpl& context, double tolerance) {
     vector<Vec3>& pos = extractPositions(context);
     vector<Vec3>& force = extractForces(context);
-    for (int i = 0; i < numDrudeParticles; i++)
-        pos[drudeParticles[i]] = Vec3(x[3*i], x[3*i+1], x[3*i+2]);
-    double energy = context.calcForcesAndEnergy(true, true);
-    for (int i = 0; i < numDrudeParticles; i++) {
-        Vec3 f = force[drudeParticles[i]];
-        g[3*i] = -f[0];
-        g[3*i+1] = -f[1];
-        g[3*i+2] = -f[2];
+    int numDrude = particle.size();
+    double lastForce = 0;
+    for (int iteration = 0; iteration < 50; iteration++) {
+        context.calcForcesAndEnergy(true, false, context.getIntegrator().getIntegrationForceGroups());
+        double totalForce = 0;
+        for (int i = 0; i < numDrude; i++) {
+            int p = particle[i];
+            int p1 = particle1[i];
+            int p2 = particle2[i];
+            int p3 = particle3[i];
+            int p4 = particle4[i];
+            Vec3 fscale(k3[i], k3[i], k3[i]);
+            if (p2 != -1) {
+                Vec3 dir = pos[p1]-pos[p2];
+                dir /= sqrt(dir.dot(dir));;
+                fscale += k1[i]*dir;
+            }
+            if (p3 != -1 && p4 != -1) {
+                Vec3 dir = pos[p3]-pos[p4];
+                dir /= sqrt(dir.dot(dir));;
+                fscale += k2[i]*dir;
+            }
+            Vec3 f = force[p];
+            double f2 = f.dot(f);
+            totalForce += f2;
+            double damping = (sqrt(f2) > 10*tolerance ? 0.5 : 1.0);
+            for (int i = 0; i < 3; i++)
+                pos[p][i] += damping*f[i]/fscale[i];
+        }
+        if (sqrt(totalForce/(3*numDrude)) < tolerance || (iteration > 0 && totalForce > 0.9*lastForce))
+            break;
+        lastForce = totalForce;
     }
-    return energy;
-}
-
-void ReferenceIntegrateDrudeSCFStepKernel::minimize(ContextImpl& context, double tolerance) {
-    // Record the initial positions and determine a normalization constant for scaling the tolerance.
-
-    vector<Vec3>& pos = extractPositions(context);
-    int numDrudeParticles = drudeParticles.size();
-    double norm = 0.0;
-    for (int i = 0; i < numDrudeParticles; i++) {
-        Vec3 p = pos[drudeParticles[i]];
-        minimizerPos[3*i] = p[0];
-        minimizerPos[3*i+1] = p[1];
-        minimizerPos[3*i+2] = p[2];
-        norm += p.dot(p);
-    }
-    norm /= numDrudeParticles;
-    norm = (norm < 1 ? 1 : sqrt(norm));
-    minimizerParams.epsilon = tolerance/norm;
-    
-    // Perform the minimization.
-
-    lbfgsfloatval_t fx;
-    MinimizerData data(context, drudeParticles);
-    lbfgs(numDrudeParticles*3, minimizerPos, &fx, evaluate, NULL, &data, &minimizerParams);
 }

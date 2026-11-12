@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -33,6 +31,7 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/Kernel.h"
+#include "openmm/LocalEnergyMinimizer.h"
 #include "openmm/Platform.h"
 #include "openmm/Vec3.h"
 #include <iosfwd>
@@ -57,6 +56,8 @@ public:
      */
     ContextImpl(Context& owner, const System& system, Integrator& integrator, Platform* platform, const std::map<std::string, std::string>& properties,
             ContextImpl* originalContext=NULL);
+    ContextImpl(const ContextImpl&) = delete;
+    ContextImpl& operator=(const ContextImpl&) = delete;
     ~ContextImpl();
     /**
      * Get the Context for which this is the implementation.
@@ -91,11 +92,21 @@ public:
      */
     void setTime(double t);
     /**
+     * Get the current step count.
+     */
+    long long getStepCount() const;
+    /**
+     * Set the current step count.
+     */
+    void setStepCount(long long count);
+    /**
      * Get the positions of all particles.
      *
      * @param positions  on exit, this contains the particle positions
+     * @param allowPeriodic  if true, the returned positions might be translated into a
+     *                       different periodic box to keep them closer to the origin
      */
-    void getPositions(std::vector<Vec3>& positions);
+    void getPositions(std::vector<Vec3>& positions, bool allowPeriodic=false);
     /**
      * Set the positions of all particles.
      *
@@ -208,6 +219,14 @@ public:
      */
     double calcKineticEnergy();
     /**
+     * Compute velocities, shifted in time to account for a leapfrog integrator.  The shift
+     * is based on the most recently computed forces.
+     * 
+     * @param timeShift   the amount by which to shift the velocities in time
+     * @param velocities  the shifted velocities are returned in this
+     */
+    void computeShiftedVelocities(double timeShift, std::vector<Vec3>& velocities);
+    /**
      * This should be called at the start of each time step.  It calls updateContextState() on each
      * ForceImpl in the system, allowing them to modify the values of state variables.
      * 
@@ -277,6 +296,15 @@ public:
      * means you shouldn't.
      */
     Context* createLinkedContext(const System& system, Integrator& integrator);
+    /**
+     * Run local energy minimization on the Context.  See LocalEnergyMinimizer
+     * for details of the parameters.
+     * 
+     * @param tolerance      how precisely the energy minimum must be located
+     * @param maxIterations  the maximum number of iterations to perform
+     * @param reporter       an optional MinimizationReporter to invoke after each iteration
+     */
+    void minimize(double tolerance, int maxIterations, MinimizationReporter* reporter);
 private:
     friend class Context;
     void initialize();
@@ -286,10 +314,10 @@ private:
     std::vector<ForceImpl*> forceImpls;
     std::map<std::string, double> parameters;
     mutable std::vector<std::vector<int> > molecules;
-    bool hasInitializedForces, hasSetPositions, integratorIsDeleted;
+    bool hasInitializedForces, hasSetPositions, integratorIsDeleted, hasMinimizeKernel;
     int lastForceGroups;
     Platform* platform;
-    Kernel initializeForcesKernel, updateStateDataKernel, applyConstraintsKernel, virtualSitesKernel;
+    Kernel initializeForcesKernel, updateStateDataKernel, applyConstraintsKernel, virtualSitesKernel, minimizeKernel;
     void* platformData;
 };
 

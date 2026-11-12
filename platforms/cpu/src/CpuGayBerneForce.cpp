@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2016-2018 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -76,9 +74,15 @@ CpuGayBerneForce::CpuGayBerneForce(const GayBerneForce& force) {
         particleExclusions[e.particle2].insert(e.particle1);
     }
     nonbondedMethod = force.getNonbondedMethod();
-    cutoffDistance = force.getCutoffDistance();
-    switchingDistance = force.getSwitchingDistance();
-    useSwitchingFunction = force.getUseSwitchingFunction();
+    if (nonbondedMethod == GayBerneForce::NoCutoff) {
+        cutoffDistance = 0.0;
+        useSwitchingFunction = false;
+    }
+    else {
+        cutoffDistance = force.getCutoffDistance();
+        switchingDistance = force.getSwitchingDistance();
+        useSwitchingFunction = force.getUseSwitchingFunction();
+    }
 
     // Allocate workspace for calculations.
 
@@ -157,7 +161,7 @@ void CpuGayBerneForce::threadComputeForce(ThreadPool& threads, int threadIndex, 
 
     // Compute this thread's subset of interactions.
     
-    if (neighborList == NULL) {
+    if (cutoffDistance == 0.0) {
         while (true) {
             int i = atomicCounter++;
             if (i >= numParticles)
@@ -181,9 +185,9 @@ void CpuGayBerneForce::threadComputeForce(ThreadPool& threads, int threadIndex, 
             if (blockIndex >= neighborList->getNumBlocks())
                 break;
             const int blockSize = neighborList->getBlockSize();
-            const int* blockAtom = &neighborList->getSortedAtoms()[blockSize*blockIndex];
+            const int32_t* blockAtom = &neighborList->getSortedAtoms()[blockSize*blockIndex];
             const vector<int>& neighbors = neighborList->getBlockNeighbors(blockIndex);
-            const vector<char>& exclusions = neighborList->getBlockExclusions(blockIndex);
+            const auto& exclusions = neighborList->getBlockExclusions(blockIndex);
             for (int i = 0; i < (int) neighbors.size(); i++) {
                 int first = neighbors[i];
                 if (particles[first].sqrtEpsilon == 0.0f)
@@ -399,7 +403,7 @@ double CpuGayBerneForce::computeOneInteraction(int particle1, int particle2, dou
         if (p.isPointParticle)
             continue;
         Vec3 dudq = (kappa*G[particle]).cross(kappa*(temp*dUSLJdr));
-        Vec3 dchidq = (iota*B[particle]).cross(iota)*(-4*rInv2);
+        Vec3 dchidq = (iota*B[particle]).cross(iota)*(-8*rInv2*sqrt(chi));
         double (&g12)[3][3] = G12.v;
         double (&a)[3][3] = A[particle].v;
         Vec3 scale = Vec3(p.rx*p.rx, p.ry*p.ry, p.rz*p.rz)*(-0.5*eta/detG12);

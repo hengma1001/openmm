@@ -1,9 +1,10 @@
 set(STAGING_OUTPUT_FILES "") # Will contain all required package files
 file(GLOB STAGING_INPUT_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
     "*.rst"
-    "*.rst.jinja2"
     "*.py"
-    "_static/logo.png"
+    "_static/logo.svg"
+    "_static/custom.css"
+    "_templates/navigation.html"
 )
 
 set(WRAPPER_DOXYGEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/doxygen")
@@ -18,7 +19,9 @@ configure_file(
 add_custom_command(
     OUTPUT "${WRAPPER_DOXYGEN_DIR}/xml/index.xml"
     COMMAND "${DOXYGEN_EXECUTABLE}"
+    COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/process-docstring.py" "${WRAPPER_DOXYGEN_DIR}/xml"
     DEPENDS "${WRAPPER_DOXYGEN_DIR}/Doxyfile"
+            "${CMAKE_CURRENT_BINARY_DIR}/process-docstring.py"
     WORKING_DIRECTORY "${WRAPPER_DOXYGEN_DIR}"
     COMMENT "Parsing OpenMM header files with Doxygen..."
 )
@@ -35,22 +38,38 @@ foreach(INIT_FILE ${STAGING_INPUT_FILES})
 endforeach(INIT_FILE ${STAGING_INPUT_FILES})
 
 add_custom_command(
-    OUTPUT  "${CMAKE_CURRENT_BINARY_DIR}/library.rst"
-    COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/render.py"
+    OUTPUT  "${CMAKE_CURRENT_BINARY_DIR}/generated/"
+    COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/breathe-apidoc.py"
+            "--generate=class"
+            "--members"
+            "--force"
+            "--brief-titles"
+            "--rename-output"
+            "--remove-prefix='OpenMM::'"
+            "--flat-output"
+            "--public-only"
+            "--quiet"
+            "--output-dir=generated"
             "${WRAPPER_DOXYGEN_DIR}/xml/"
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/render.py"
-            "${CMAKE_CURRENT_BINARY_DIR}/library.rst.jinja2"
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/breathe-apidoc.py"
             "${WRAPPER_DOXYGEN_DIR}/xml/index.xml"
     )
 
+
 add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/api-c++/index.html"
-    COMMAND "${PYTHON_EXECUTABLE}" -m sphinx . "${CMAKE_BINARY_DIR}/api-c++"
+    COMMAND "${CMAKE_COMMAND}" -E rm "${CMAKE_CURRENT_BINARY_DIR}/generated/*::*"
+    COMMAND "${PYTHON_EXECUTABLE}" -m sphinx . "${CMAKE_BINARY_DIR}/api-c++" -W --keep-going # Promote warnings to errors to catch undocumented classes
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/conf.py"
-            "${CMAKE_CURRENT_BINARY_DIR}/library.rst"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/"
             "${CMAKE_CURRENT_BINARY_DIR}/index.rst"
-            "${CMAKE_CURRENT_BINARY_DIR}/_static/logo.png"
+            "${CMAKE_CURRENT_BINARY_DIR}/forces.rst"
+            "${CMAKE_CURRENT_BINARY_DIR}/integrators.rst"
+            "${CMAKE_CURRENT_BINARY_DIR}/extras.rst"
+            "${CMAKE_CURRENT_BINARY_DIR}/_static/logo.svg"
+            "${CMAKE_CURRENT_BINARY_DIR}/_static/custom.css"
+            "${CMAKE_CURRENT_BINARY_DIR}/_templates/navigation.html"
             "${WRAPPER_DOXYGEN_DIR}/xml/index.xml"
 )
 

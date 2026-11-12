@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -44,6 +42,7 @@ using std::string;
 using std::stringstream;
 
 CustomExternalForceImpl::CustomExternalForceImpl(const CustomExternalForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomExternalForceImpl::~CustomExternalForceImpl() {
@@ -77,15 +76,13 @@ void CustomExternalForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomExternalForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomExternalForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> CustomExternalForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcCustomExternalForceKernel::Name());
-    return names;
+    return {CalcCustomExternalForceKernel::Name()};
 }
 
 map<string, double> CustomExternalForceImpl::getDefaultParameters() {
@@ -95,7 +92,7 @@ map<string, double> CustomExternalForceImpl::getDefaultParameters() {
     return parameters;
 }
 
-void CustomExternalForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcCustomExternalForceKernel>().copyParametersToContext(context, owner);
+void CustomExternalForceImpl::updateParametersInContext(ContextImpl& context, int firstParticle, int lastParticle) {
+    kernel.getAs<CalcCustomExternalForceKernel>().copyParametersToContext(context, owner, firstParticle, lastParticle);
     context.systemChanged();
 }

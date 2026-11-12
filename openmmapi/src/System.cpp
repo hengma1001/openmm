@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -138,7 +136,7 @@ bool System::usesPeriodicBoundaryConditions() const {
     bool uses_pbc = false;
     bool all_forces_implement = true;
     for (std::vector<Force*>::const_iterator it = forces.begin();
-            it != forces.end(); it++) {
+            it != forces.end(); ++it) {
         try {
             if ((*it)->usesPeriodicBoundaryConditions())
                 uses_pbc = true;
@@ -153,4 +151,16 @@ bool System::usesPeriodicBoundaryConditions() const {
     }
 
     return uses_pbc;
+}
+
+int System::getNumParticles() const {
+    return masses.size();
+}
+
+int System::getNumConstraints() const {
+    return constraints.size();
+}
+
+int System::getNumForces() const {
+    return forces.size();
 }

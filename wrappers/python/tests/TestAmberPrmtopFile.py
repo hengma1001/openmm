@@ -2,19 +2,22 @@ import unittest
 import os
 import tempfile
 from validateConstraints import *
-from simtk.openmm.app import *
-from simtk.openmm import *
-from simtk.unit import *
-import simtk.openmm.app.element as elem
+from openmm.app import *
+from openmm import *
+from openmm.unit import *
+import openmm.app.element as elem
 
-prmtop1 = AmberPrmtopFile('systems/alanine-dipeptide-explicit.prmtop')
-prmtop2 = AmberPrmtopFile('systems/alanine-dipeptide-implicit.prmtop')
-prmtop3 = AmberPrmtopFile('systems/ff14ipq.parm7')
-prmtop4 = AmberPrmtopFile('systems/Mg_water.prmtop')
-prmtop5 = AmberPrmtopFile('systems/tz2.truncoct.parm7')
-prmtop6 = AmberPrmtopFile('systems/gaffwat.parm7')
+inpcrd1 = AmberInpcrdFile('systems/alanine-dipeptide-explicit.inpcrd')
 inpcrd3 = AmberInpcrdFile('systems/ff14ipq.rst7')
 inpcrd4 = AmberInpcrdFile('systems/Mg_water.inpcrd')
+inpcrd7 = AmberInpcrdFile('systems/18protein.rst7')
+prmtop1 = AmberPrmtopFile('systems/alanine-dipeptide-explicit.prmtop')
+prmtop2 = AmberPrmtopFile('systems/alanine-dipeptide-implicit.prmtop')
+prmtop3 = AmberPrmtopFile('systems/ff14ipq.parm7', periodicBoxVectors=inpcrd3.boxVectors)
+prmtop4 = AmberPrmtopFile('systems/Mg_water.prmtop', periodicBoxVectors=inpcrd4.boxVectors)
+prmtop5 = AmberPrmtopFile('systems/tz2.truncoct.parm7')
+prmtop6 = AmberPrmtopFile('systems/gaffwat.parm7')
+prmtop7 = AmberPrmtopFile('systems/18protein.parm7', periodicBoxVectors=inpcrd7.boxVectors)
 
 class TestAmberPrmtopFile(unittest.TestCase):
 
@@ -35,6 +38,12 @@ class TestAmberPrmtopFile(unittest.TestCase):
             self.assertTrue(any(isinstance(f, NonbondedForce) and
                                 f.getNonbondedMethod()==methodMap[method]
                                 for f in forces))
+
+    def test_LJPME_NBFIX(self):
+        """Test LJPME with NBFIX."""
+
+        with self.assertRaisesRegex(ValueError, 'LJPME is not supported'):
+            prmtop3.createSystem(nonbondedMethod=LJPME)
 
     def test_Cutoff(self):
         """Test to make sure the nonbondedCutoff parameter is passed correctly."""
@@ -76,12 +85,14 @@ class TestAmberPrmtopFile(unittest.TestCase):
         """Test all eight options for the constraints and rigidWater parameters."""
 
         topology = prmtop1.topology
-        for constraints_value in [None, HBonds, AllBonds, HAngles]:
-            for rigidWater_value in [True, False]:
-                system = prmtop1.createSystem(constraints=constraints_value,
-                                              rigidWater=rigidWater_value)
-                validateConstraints(self, topology, system,
-                                    constraints_value, rigidWater_value)
+        for constraints in [None, HBonds, AllBonds, HAngles]:
+            for rigidWater in [True, False]:
+                system = prmtop1.createSystem(constraints=constraints, rigidWater=rigidWater)
+                if constraints != None:
+                    # Amber adds an extra "bond" between water hydrogens, so any constraint
+                    # method except None is equivalent to rigidWater=True.
+                    rigidWater = True
+                validateConstraints(self, topology, system, constraints, rigidWater)
 
     def test_ImplicitSolvent(self):
         """Test the four types of implicit solvents using the implicitSolvent
@@ -89,7 +100,7 @@ class TestAmberPrmtopFile(unittest.TestCase):
 
         """
         for implicitSolvent_value, gbsa in zip([HCT, OBC1, OBC2, GBn], ['ACE', None, 'ACE', None]):
-            system = prmtop2.createSystem(implicitSolvent=implicitSolvent_value, gbsaModel=gbsa)
+            system = prmtop2.createSystem(implicitSolvent=implicitSolvent_value, sasaMethod=gbsa)
             forces = system.getForces()
             if implicitSolvent_value in set([HCT, OBC1, GBn]):
                 force_type = CustomGBForce
@@ -127,6 +138,27 @@ class TestAmberPrmtopFile(unittest.TestCase):
                     self.assertTrue(found_matching_solvent_dielectric and
                                     found_matching_solute_dielectric)
 
+    def test_ImplicitSolventZeroSA(self):
+        """Test that requesting sasaMethod=None yields a surface area energy of 0 when
+           prmtop.createSystem produces a GBSAOBCForce"""
+        system = prmtop2.createSystem(implicitSolvent=OBC2, sasaMethod=None)
+        for force in system.getForces():
+            if isinstance(force, GBSAOBCForce):
+                self.assertEqual(force.getSurfaceAreaEnergy(), 0*kilojoule/(nanometer**2*mole))
+
+    def test_SASAMethodAlias(self):
+        """Tests that gbsaModel is an alias for sasaMethod"""
+        for method in (None, 'ACE', 'LCPO'):
+            system1 = prmtop2.createSystem(implicitSolvent=OBC2, sasaMethod=method)
+            system2 = prmtop2.createSystem(implicitSolvent=OBC2, gbsaModel=method)
+            self.assertEqual(XmlSerializer.serialize(system1), XmlSerializer.serialize(system2))
+
+    def test_SASAMethodDefault(self):
+        """Tests that ACE is the default for sasaMethod"""
+        system1 = prmtop2.createSystem(implicitSolvent=OBC2)
+        system2 = prmtop2.createSystem(implicitSolvent=OBC2, sasaMethod='ACE')
+        self.assertEqual(XmlSerializer.serialize(system1), XmlSerializer.serialize(system2))
+
     def test_HydrogenMass(self):
         """Test that altering the mass of hydrogens works correctly."""
 
@@ -137,7 +169,10 @@ class TestAmberPrmtopFile(unittest.TestCase):
         for atom in topology.atoms():
             if atom.element == elem.hydrogen:
                 self.assertNotEqual(hydrogenMass, system1.getParticleMass(atom.index))
-                self.assertEqual(hydrogenMass, system2.getParticleMass(atom.index))
+                if atom.residue.name == 'HOH':
+                    self.assertEqual(system1.getParticleMass(atom.index), system2.getParticleMass(atom.index))
+                else:
+                    self.assertEqual(hydrogenMass, system2.getParticleMass(atom.index))
         totalMass1 = sum([system1.getParticleMass(i) for i in range(system1.getNumParticles())]).value_in_unit(amu)
         totalMass2 = sum([system2.getParticleMass(i) for i in range(system2.getNumParticles())]).value_in_unit(amu)
         self.assertAlmostEqual(totalMass1, totalMass2)
@@ -162,9 +197,8 @@ class TestAmberPrmtopFile(unittest.TestCase):
         integrator = VerletIntegrator(1.0*femtoseconds)
         # Use reference platform, since it should always be present and
         # 'working', and the system is plenty small so this won't be too slow
-        sim = Simulation(prmtop3.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        sim = Simulation(prmtop3.topology, system, integrator, Platform.getPlatform('Reference'))
         # Check that the energy is about what we expect it to be
-        sim.context.setPeriodicBoxVectors(*inpcrd3.boxVectors)
         sim.context.setPositions(inpcrd3.positions)
         ene = sim.context.getState(getEnergy=True, enforcePeriodicBox=True).getPotentialEnergy()
         ene = ene.value_in_unit(kilocalories_per_mole)
@@ -193,9 +227,8 @@ class TestAmberPrmtopFile(unittest.TestCase):
         integrator = VerletIntegrator(1.0*femtoseconds)
         # Use reference platform, since it should always be present and
         # 'working', and the system is plenty small so this won't be too slow
-        sim = Simulation(prmtop3.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        sim = Simulation(prmtop3.topology, system, integrator, Platform.getPlatform('Reference'))
         # Check that the energy is about what we expect it to be
-        sim.context.setPeriodicBoxVectors(*inpcrd3.getBoxVectors())
         sim.context.setPositions(inpcrd3.getPositions())
         ene = sim.context.getState(getEnergy=True, enforcePeriodicBox=True).getPotentialEnergy()
         ene = ene.value_in_unit(kilocalories_per_mole)
@@ -241,12 +274,19 @@ class TestAmberPrmtopFile(unittest.TestCase):
         self.assertTrue(has_nonbond_force)
         self.assertTrue(has_custom_nonbond_force)
         self.assertEqual(nonbond_exceptions, custom_nonbond_exceptions)
+        # Make sure the periodic box vectors match the ones in the inpcrd file, which are different from
+        # the ones in the prmtop file.
+        systemBox = system.getDefaultPeriodicBoxVectors()
+        topologyBox = prmtop4.topology.getPeriodicBoxVectors()
+        for i in range(3):
+            for j in range(3):
+                self.assertEqual(inpcrd4.boxVectors[i][j], systemBox[i][j])
+                self.assertEqual(inpcrd4.boxVectors[i][j], topologyBox[i][j])
         integrator = VerletIntegrator(1.0*femtoseconds)
         # Use reference platform, since it should always be present and
         # 'working', and the system is plenty small so this won't be too slow
-        sim = Simulation(prmtop4.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        sim = Simulation(prmtop4.topology, system, integrator, Platform.getPlatform('Reference'))
         # Check that the energy is about what we expect it to be
-        sim.context.setPeriodicBoxVectors(*inpcrd4.boxVectors)
         sim.context.setPositions(inpcrd4.positions)
         ene = sim.context.getState(getEnergy=True, enforcePeriodicBox=True).getPotentialEnergy()
         ene = ene.value_in_unit(kilocalories_per_mole)
@@ -290,13 +330,36 @@ class TestAmberPrmtopFile(unittest.TestCase):
         for i in range(5):
             system = prmtop2.createSystem(implicitSolvent=solventType[i], nonbondedMethod=nonbondedMethod[i], implicitSolventSaltConc=salt[i])
             integrator = VerletIntegrator(0.001)
-            context = Context(system, integrator, Platform.getPlatformByName("Reference"))
+            context = Context(system, integrator, Platform.getPlatform("Reference"))
             context.setPositions(pdb.positions)
             state1 = context.getState(getForces=True)
-            state2 = XmlSerializer.deserialize(open('systems/alanine-dipeptide-implicit-forces/'+file[i]+'.xml').read())
+            with open('systems/alanine-dipeptide-implicit-forces/'+file[i]+'.xml') as infile:
+                state2 = XmlSerializer.deserialize(infile.read())
             for f1, f2, in zip(state1.getForces().value_in_unit(kilojoules_per_mole/nanometer), state2.getForces().value_in_unit(kilojoules_per_mole/nanometer)):
                 diff = norm(f1-f2)
                 self.assertTrue(diff < 0.1 or diff/norm(f1) < 1e-4)
+
+    def test_LCPO(self):
+        """Compute LCPO energy and compare it to a reference value from Amber."""
+
+        prmtopLCPO = AmberPrmtopFile('systems/lcpo_test.prmtop')
+        pdb = PDBFile('systems/lcpo_test.pdb')
+        systemNone = prmtopLCPO.createSystem(implicitSolvent=GBn2, sasaMethod=None)
+        systemLCPO = prmtopLCPO.createSystem(implicitSolvent=GBn2, sasaMethod='LCPO')
+        contextNone = Context(systemNone, VerletIntegrator(0.001), Platform.getPlatformByName("Reference"))
+        contextLCPO = Context(systemLCPO, VerletIntegrator(0.001), Platform.getPlatformByName("Reference"))
+        contextNone.setPositions(pdb.positions)
+        contextLCPO.setPositions(pdb.positions)
+        energyRef = 14.1908 * kilocalorie_per_mole
+        energyLCPO = contextLCPO.getState(energy=True).getPotentialEnergy() - contextNone.getState(energy=True).getPotentialEnergy()
+        self.assertAlmostEqual(energyLCPO.value_in_unit(kilocalorie_per_mole), energyRef.value_in_unit(kilocalorie_per_mole), 4)
+
+    def test_LCPOInvalid(self):
+        """Check that LCPO parameter assignment fails instead of assigning incorrect parameters for unsupported atom types."""
+
+        prmtop = AmberPrmtopFile('systems/lcpo_invalid.prmtop')
+        with self.assertRaisesRegex(ValueError, 'atomic number 8.+2 bonds.+0 bonds excluding H'):
+            prmtop.createSystem(implicitSolvent=GBn2, sasaMethod='LCPO')
 
     def testSwitchFunction(self):
         """ Tests the switching function option in AmberPrmtopFile """
@@ -344,7 +407,6 @@ class TestAmberPrmtopFile(unittest.TestCase):
 
         simulation = Simulation(prmtop.topology, system, integrator)
         simulation.context.setPositions(inpcrd.positions)
-        simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
         fname = tempfile.mktemp(suffix='.dcd')
         simulation.reporters.append(DCDReporter(fname, 1))  # This is an explicit test for the bugs in issue #850
@@ -353,19 +415,35 @@ class TestAmberPrmtopFile(unittest.TestCase):
         os.remove(fname)
 
     def testChamber(self):
-        """ Tests that Chamber prmtops fail with proper error message """
-        self.assertRaises(TypeError, lambda: AmberPrmtopFile('systems/ala3_solv.parm7'))
-        try:
-            parm = AmberPrmtopFile('systems/ala3_solv.parm7')
-            # Should not make it past here
-            self.assertTrue(False)
-        except TypeError as e:
-            # Make sure it says something about chamber
-            self.assertTrue('chamber' in str(e).lower())
+        """Test a prmtop file created with Chamber."""
+        prmtop = AmberPrmtopFile('systems/ala3_solv.parm7')
+        crd = CharmmCrdFile('systems/ala3_solv.crd')
+        system = prmtop.createSystem()
+        for i,f in enumerate(system.getForces()):
+            f.setForceGroup(i)
+        integrator = VerletIntegrator(0.001)
+        context = Context(system, integrator, Platform.getPlatform('Reference'))
+        context.setPositions(crd.positions)
+        
+        # Compare to energies computed with pytraj.energy_decomposition()
+        
+        energy = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilocalories_per_mole)
+        self.assertAlmostEqual(energy, -7806.981602, delta=5e-4*abs(energy))
+        components = {}
+        for i,f in enumerate(system.getForces()):
+            components[f.getName()] = context.getState(getEnergy=True, groups={i}).getPotentialEnergy().value_in_unit(kilocalories_per_mole)
+        self.assertAlmostEqual(components['HarmonicBondForce'], 1.13242125)
+        self.assertAlmostEqual(components['HarmonicAngleForce'], 1.06880188)
+        self.assertAlmostEqual(components['UreyBradleyForce'], 0.06142407)
+        self.assertAlmostEqual(components['PeriodicTorsionForce'], 7.81143025)
+        self.assertAlmostEqual(components['ImproperTorsionForce'], 2.66453526e-14, delta=1e-6)
+        self.assertAlmostEqual(components['CMAPTorsionForce'], 0.12679003)
+        self.assertAlmostEqual(components['CustomNonbondedForce'], 909.28136359)
+        self.assertAlmostEqual(components['NonbondedForce'], -9007.16903192+277.35152722+3.35367163, delta=5e-4*abs(components['NonbondedForce']))
 
     def testGBneckRadii(self):
         """ Tests that GBneck radii limits are correctly enforced """
-        from simtk.openmm.app.internal.customgbforces import GBSAGBnForce
+        from openmm.app.internal.customgbforces import GBSAGBnForce
         f = GBSAGBnForce()
         # Make sure legal parameters do not raise
         f.addParticle([0, 0.1, 0.5])
@@ -374,6 +452,90 @@ class TestAmberPrmtopFile(unittest.TestCase):
         # Now make sure that out-of-range parameters *do* raise
         self.assertRaises(ValueError, lambda: f.addParticle([0, 0.9, 0.5]))
         self.assertRaises(ValueError, lambda: f.addParticle([0, 0.21, 0.5]))
+
+    def testNucleicGBParametes(self):
+        """Test that correct GB parameters are used for nucleic acids."""
+        prmtop = AmberPrmtopFile('systems/DNA_mbondi3.prmtop')
+        inpcrd = AmberInpcrdFile('systems/DNA_mbondi3.inpcrd')
+        sanderEnergy = [-19223.87993545, -19527.40433175, -19788.1070698]
+        for solvent, expectedEnergy in zip([OBC2, GBn, GBn2], sanderEnergy):
+            system = prmtop.createSystem(implicitSolvent=solvent, sasaMethod=None)
+            for f in system.getForces():
+                if isinstance(f, CustomGBForce) or isinstance(f, GBSAOBCForce):
+                    f.setForceGroup(1)
+            integrator = VerletIntegrator(0.001)
+            context = Context(system, integrator, Platform.getPlatform('Reference'))
+            context.setPositions(inpcrd.positions)
+            energy = context.getState(getEnergy=True, groups={1}).getPotentialEnergy().value_in_unit(kilojoules_per_mole)
+            self.assertAlmostEqual(energy, expectedEnergy, delta=5e-4*abs(energy))
+
+    def testAmberCMAP(self):
+        """Check that CMAP energy calculation compared to AMber."""
+        temperature = 50*kelvin
+        conversion = 4.184 # 4.184 kJ/mol
+        sander_CMAP_E = 8.2864 # CMAP energy calculated by Amber, unit kcal/mol
+
+        prmtop = prmtop7  # systems/18protein.parm7
+        inpcrd = inpcrd7  # systems/18protein.rst7
+
+        system = prmtop.createSystem(nonbondedMethod=PME, nonbondedCutoff=1.2)
+        integrator = LangevinIntegrator(temperature, 1.0 / picosecond, 0.002 * picoseconds)
+
+        simulation = Simulation(prmtop.topology, system, integrator)
+        simulation.context.setPositions(inpcrd.positions)
+
+        for i, force in enumerate(system.getForces()):
+            force.setForceGroup(i)
+            
+        simulation.context.reinitialize(True)
+
+        for i in range(system.getNumForces()):
+            if i == 3: # 3 indicates CMAP force
+#                print(simulation.context.getState(getEnergy=True, groups=1<<i).getPotentialEnergy().value_in_unit(kilojoules_per_mole))
+                OpenMM_CMAP_E = simulation.context.getState(getEnergy=True, groups=1<<i).getPotentialEnergy().value_in_unit(kilojoules_per_mole)/conversion
+                self.assertAlmostEqual(OpenMM_CMAP_E, sander_CMAP_E, places=4)
+
+    def testEPConstraints(self):
+        """Test different types of constraints when using extra particles"""
+        prmtop = AmberPrmtopFile('systems/peptide_with_tip4p.prmtop')
+        for constraints in (HBonds, AllBonds):
+            system = prmtop.createSystem(constraints=constraints)
+            integrator = VerletIntegrator(0.001*picoseconds)
+            # If a constraint was added to a massless particle, this will throw an exception.
+            context = Context(system, integrator, Platform.getPlatform('Reference'))
+
+    def testWaterBonds(self):
+        """Test that water molecules have the right set of bonds"""
+        top = prmtop1.topology
+        for residue in top.residues():
+            if residue.name == 'HOH':
+                bonds = list(residue.bonds())
+                self.assertEqual(2, len(bonds))
+                for a1, a2 in bonds:
+                    self.assertTrue(a1.element == elem.oxygen or a2.element == elem.oxygen)
+                    self.assertTrue(a1.element == elem.hydrogen or a2.element == elem.hydrogen)
+
+    def testFlexibleConstraints(self):
+        """Test the flexibleConstraints option"""
+        energies = {}
+        forces = {}
+        for flexibleConstraints in [False, True]:
+            system = prmtop1.createSystem(nonbondedMethod=PME, constraints=HAngles, flexibleConstraints=flexibleConstraints)
+            for i, f in enumerate(system.getForces()):
+                f.setForceGroup(i)
+            integrator = VerletIntegrator(1.0*femtoseconds)
+            sim = Simulation(prmtop1.topology, system, integrator, Platform.getPlatform('Reference'))
+            sim.context.setPositions(inpcrd1.positions)
+            energies[flexibleConstraints] = {}
+            for i, f in enumerate(system.getForces()):
+                forces[i] = f
+                energies[flexibleConstraints][i] = sim.context.getState(getEnergy=True, groups={i}).getPotentialEnergy().value_in_unit(kilojoules_per_mole)
+        for i, f in forces.items():
+            delta = 1e-5*abs(energies[True][i])
+            if isinstance(f, HarmonicBondForce) or isinstance(f, HarmonicAngleForce):
+                self.assertNotAlmostEqual(energies[True][i], energies[False][i], delta=delta)
+            else:
+                self.assertAlmostEqual(energies[True][i], energies[False][i], delta=delta)
 
 if __name__ == '__main__':
     unittest.main()

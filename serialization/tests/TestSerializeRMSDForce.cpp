@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2018 Stanford University and the Authors.            *
  * Authors: Peter Eastman                                                     *
@@ -49,6 +47,7 @@ void testSerialization() {
         particles.push_back(i*i);
     RMSDForce force(refPos, particles);
     force.setForceGroup(3);
+    force.setName("custom name");
 
     // Serialize and then deserialize it.
 
@@ -60,6 +59,7 @@ void testSerialization() {
 
     RMSDForce& force2 = *copy;
     ASSERT_EQUAL(force.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force.getName(), force2.getName());
     ASSERT_EQUAL(force.getReferencePositions().size(), force2.getReferencePositions().size());
     for (int i = 0; i < force.getReferencePositions().size(); i++)
         ASSERT_EQUAL_VEC(force.getReferencePositions()[i], force2.getReferencePositions()[i], 0.0);

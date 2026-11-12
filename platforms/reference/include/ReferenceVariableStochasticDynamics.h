@@ -1,5 +1,5 @@
 
-/* Portions copyright (c) 2006-2016 Stanford University and Simbios.
+/* Portions copyright (c) 2006-2024 Stanford University and Simbios.
  * Contributors: Pande Group
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -33,7 +33,7 @@ class ReferenceVariableStochasticDynamics : public ReferenceDynamics {
 
    private:
 
-      std::vector<OpenMM::Vec3> xPrime;
+      std::vector<OpenMM::Vec3> xPrime, oldx;
       std::vector<double> inverseMasses;
       double friction, _accuracy;
 
@@ -97,46 +97,39 @@ class ReferenceVariableStochasticDynamics : public ReferenceDynamics {
          @param masses              atom masses
          @param maxStepSize         maximum time step
          @param tolerance           the constraint tolerance
+         @param boxVectors          the current periodic box vectors
 
          --------------------------------------------------------------------------------------- */
 
       void update(const OpenMM::System& system, std::vector<OpenMM::Vec3>& atomCoordinates,
-                  std::vector<OpenMM::Vec3>& velocities, std::vector<OpenMM::Vec3>& forces, std::vector<double>& masses, double maxStepSize, double tolerance);
+                  std::vector<OpenMM::Vec3>& velocities, std::vector<OpenMM::Vec3>& forces, std::vector<double>& masses, double maxStepSize, double tolerance, const Vec3* boxVectors);
 
       /**---------------------------------------------------------------------------------------
+            
+         @param numberOfAtoms       number of atoms
+         @param velocities          velocities
+         @param forces              forces
+         @param inverseMasses       inverse atom masses
+         @param maxStepSize         maximum time step
+      
+         --------------------------------------------------------------------------------------- */
+      
+      void updatePart1(int numberOfAtoms, std::vector<OpenMM::Vec3>& velocities,  std::vector<OpenMM::Vec3>& forces, std::vector<double>& inverseMasses, double maxStepSize);
 
-         First update; based on code in update.c do_update_sd() Gromacs 3.1.4
-
+      /**---------------------------------------------------------------------------------------
+      
+         Second update
+      
          @param numberOfAtoms       number of atoms
          @param atomCoordinates     atom coordinates
          @param velocities          velocities
-         @param forces              forces
-         @param masses              atom masses
          @param inverseMasses       inverse atom masses
          @param xPrime              xPrime
-         @param maxStepSize         maximum time step
-
+      
          --------------------------------------------------------------------------------------- */
-
-      void updatePart1(int numberOfAtoms, std::vector<OpenMM::Vec3>& atomCoordinates, std::vector<OpenMM::Vec3>& velocities,
-                       std::vector<OpenMM::Vec3>& forces, std::vector<double>& masses, std::vector<double>& inverseMasses,
-                       std::vector<OpenMM::Vec3>& xPrime, double maxStepSize);
-
-      /**---------------------------------------------------------------------------------------
-
-         Second update
-
-         @param numberOfAtoms       number of atoms
-         @param atomCoordinates     atom coordinates
-         @param velocities          velocities
-         @param forces              forces
-         @param masses              atom masses
-
-         --------------------------------------------------------------------------------------- */
-
+      
       void updatePart2(int numberOfAtoms, std::vector<OpenMM::Vec3>& atomCoordinates, std::vector<OpenMM::Vec3>& velocities,
-                       std::vector<OpenMM::Vec3>& forces, std::vector<double>& inverseMasses,
-                       std::vector<OpenMM::Vec3>& xPrime);
+                               std::vector<double>& inverseMasses, std::vector<OpenMM::Vec3>& xPrime);
       
 };
 

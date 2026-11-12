@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   Lepton                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the Lepton expression parser originating from              *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the Lepton expression parser.                              *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009 Stanford University and the Authors.           *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -68,6 +66,7 @@ private:
     static ParseToken getNextToken(const std::string& expression, int start);
     static ExpressionTreeNode parsePrecedence(const std::vector<ParseToken>& tokens, int& pos, const std::map<std::string, CustomFunction*>& customFunctions,
             const std::map<std::string, ExpressionTreeNode>& subexpressionDefs, int precedence);
+    static int getOperatorIndex(const std::string& exporession, int start=0);
     static Operation* getOperatorOperation(const std::string& name);
     static Operation* getFunctionOperation(const std::string& name, const std::map<std::string, CustomFunction*>& customFunctions);
 };

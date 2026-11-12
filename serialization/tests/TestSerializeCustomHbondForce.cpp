@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2014 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -43,6 +41,7 @@ void testSerialization() {
 
     CustomHbondForce force("5*sin(x)^2+y*z");
     force.setForceGroup(3);
+    force.setName("custom name");
     force.setNonbondedMethod(CustomHbondForce::CutoffPeriodic);
     force.setCutoffDistance(2.1);
     force.addGlobalParameter("x", 1.3);
@@ -79,6 +78,7 @@ void testSerialization() {
 
     CustomHbondForce& force2 = *copy;
     ASSERT_EQUAL(force.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force.getName(), force2.getName());
     ASSERT_EQUAL(force.getEnergyFunction(), force2.getEnergyFunction());
     ASSERT_EQUAL(force.getNonbondedMethod(), force2.getNonbondedMethod());
     ASSERT_EQUAL(force.getCutoffDistance(), force2.getCutoffDistance());

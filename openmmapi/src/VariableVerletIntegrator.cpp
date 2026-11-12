@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -41,7 +39,7 @@ using namespace OpenMM;
 using std::string;
 using std::vector;
 
-VariableVerletIntegrator::VariableVerletIntegrator(double errorTol) : errorTol(errorTol) {
+VariableVerletIntegrator::VariableVerletIntegrator(double errorTol) : errorTol(errorTol), maxStepSize(0.0) {
     setConstraintTolerance(1e-5);
     setStepSize(0.0);
 }
@@ -55,14 +53,24 @@ void VariableVerletIntegrator::initialize(ContextImpl& contextRef) {
     kernel.getAs<IntegrateVariableVerletStepKernel>().initialize(contextRef.getSystem(), *this);
 }
 
+void VariableVerletIntegrator::setErrorTolerance(double tol) {
+    if (tol <= 0)
+        throw OpenMMException("Error tolerance must be positive");
+    errorTol = tol;
+}
+
+void VariableVerletIntegrator::setMaximumStepSize(double size) {
+    if (size < 0)
+        throw OpenMMException("Maximum step size cannot be negative");
+    maxStepSize = size;
+}
+
 void VariableVerletIntegrator::cleanup() {
     kernel = Kernel();
 }
 
 vector<string> VariableVerletIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateVariableVerletStepKernel::Name());
-    return names;
+    return {IntegrateVariableVerletStepKernel::Name()};
 }
 
 double VariableVerletIntegrator::computeKineticEnergy() {
@@ -74,7 +82,7 @@ void VariableVerletIntegrator::step(int steps) {
         throw OpenMMException("This Integrator is not bound to a context!");
     for (int i = 0; i < steps; ++i) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         setStepSize(kernel.getAs<IntegrateVariableVerletStepKernel>().execute(*context, *this, std::numeric_limits<double>::infinity()));
     }
 }
@@ -84,7 +92,7 @@ void VariableVerletIntegrator::stepTo(double time) {
         throw OpenMMException("This Integrator is not bound to a context!");  
     while (time > context->getTime()) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         setStepSize(kernel.getAs<IntegrateVariableVerletStepKernel>().execute(*context, *this, time));
     }
 }

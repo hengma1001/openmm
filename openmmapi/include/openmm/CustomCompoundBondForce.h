@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -77,25 +75,53 @@ namespace OpenMM {
  * is an interaction between three particles that depends on the angle formed by p1-p2-p3, and on the distance between
  * p1 and p3.
  *
- * <tt>CustomCompoundBondForce* force = new CustomCompoundBondForce(3, "0.5*(kangle*(angle(p1,p2,p3)-theta0)^2+kbond*(distance(p1,p3)-r0)^2)");</tt>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomCompoundBondForce* force = new CustomCompoundBondForce(3, "0.5*(kangle*(angle(p1,p2,p3)-theta0)^2+kbond*(distance(p1,p3)-r0)^2)");
+ * </c++>
+ * <python>
+ * force = CustomCompoundBondForce(3, "0.5*(kangle*(angle(p1,p2,p3)-theta0)^2+kbond*(distance(p1,p3)-r0)^2)")
+ * </python>
+ * \endverbatim
  *
  * This force depends on four parameters: kangle, kbond, theta0, and r0.  The following code defines these as per-bond parameters:
  *
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * force->addPerBondParameter("kangle");
  * force->addPerBondParameter("kbond");
  * force->addPerBondParameter("theta0");
  * force->addPerBondParameter("r0");
- * </pre></tt>
+ * </c++>
+ * <python>
+ * force.addPerBondParameter("kangle")
+ * force.addPerBondParameter("kbond")
+ * force.addPerBondParameter("theta0")
+ * force.addPerBondParameter("r0")
+ * </python>
+ * \endverbatim
  *
  * This class also has the ability to compute derivatives of the potential energy with respect to global parameters.
  * Call addEnergyParameterDerivative() to request that the derivative with respect to a particular parameter be
  * computed.  You can then query its value in a Context by calling getState() on it.
  *
- * Expressions may involve the operators + (add), - (subtract), * (multiply), / (divide), and ^ (power), and the following
- * functions: sqrt, exp, log, sin, cos, sec, csc, tan, cot, asin, acos, atan, sinh, cosh, tanh, erf, erfc, min, max, abs, floor, ceil, step, delta, select.  All trigonometric functions
- * are defined in radians, and log is the natural logarithm.  step(x) = 0 if x is less than 0, 1 otherwise.  delta(x) = 1 if x is 0, 0 otherwise.
- * select(x,y,z) = z if x = 0, y otherwise.
+ * For details on how to write expressions, see [the User Guide](https://docs.openmm.org/latest/userguide/theory/03_custom_forces.html#writing-custom-expressions).
+ * 
+ * This class also supports the functions pointdistance(x1, y1, z1, x2, y2, z2),
+ * pointangle(x1, y1, z1, x2, y2, z2, x3, y3, z3), and pointdihedral(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4).
+ * These functions are similar to distance(), angle(), and dihedral(), but the arguments are the
+ * coordinates of points to perform the calculation based on rather than the names of particles.
+ * This enables more flexible geometric calculations.  For example, the following computes the distance
+ * from particle p1 to the midpoint between particles p2 and p3.
+ * 
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomCompoundBondForce* force = new CustomCompoundBondForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)");
+ * </c++>
+ * <python>
+ * force = CustomCompoundBondForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)")
+ * </python>
+ * \endverbatim
  *
  * In addition, you can call addTabulatedFunction() to define a new function based on tabulated values.  You specify the function by
  * creating a TabulatedFunction object.  That function can then appear in the expression.
@@ -116,48 +142,34 @@ public:
     /**
      * Get the number of particles used to define each bond.
      */
-    int getNumParticlesPerBond() const {
-        return particlesPerBond;
-    }
+    int getNumParticlesPerBond() const;
     /**
      * Get the number of bonds for which force field parameters have been defined.
      */
-    int getNumBonds() const {
-        return bonds.size();
-    }
+    int getNumBonds() const;
     /**
      * Get the number of per-bond parameters that the interaction depends on.
      */
-    int getNumPerBondParameters() const {
-        return bondParameters.size();
-    }
+    int getNumPerBondParameters() const;
     /**
      * Get the number of global parameters that the interaction depends on.
      */
-    int getNumGlobalParameters() const {
-        return globalParameters.size();
-    }
+    int getNumGlobalParameters() const;
     /**
      * Get the number of global parameters with respect to which the derivative of the energy
      * should be computed.
      */
-    int getNumEnergyParameterDerivatives() const {
-        return energyParameterDerivatives.size();
-    }
+    int getNumEnergyParameterDerivatives() const;
     /**
      * Get the number of tabulated functions that have been defined.
      */
-    int getNumTabulatedFunctions() const {
-        return functions.size();
-    }
+    int getNumTabulatedFunctions() const;
     /**
      * Get the number of tabulated functions that have been defined.
      *
      * @deprecated This method exists only for backward compatibility.  Use getNumTabulatedFunctions() instead.
      */
-    int getNumFunctions() const {
-        return functions.size();
-    }
+    int getNumFunctions() const;
     /**
      * Get the algebraic expression that gives the interaction energy of each bond
      */
@@ -304,26 +316,27 @@ public:
     /**
      * Get the parameters for a tabulated function that may appear in the energy expression.
      *
-     * @deprecated This method exists only for backward compatibility.  Use getTabulatedFunctionParameters() instead.
-     * If the specified function is not a Continuous1DFunction, this throws an exception.
+     * @deprecated This method exists only for backward compatibility.  Call getFunctionParameters() on the TabulatedFunction
+     * object instead.  If the specified function is not a Continuous1DFunction, this throws an exception.
      */
     void getFunctionParameters(int index, std::string& name, std::vector<double>& values, double& min, double& max) const;
     /**
      * Set the parameters for a tabulated function that may appear in the energy expression.
      *
-     * @deprecated This method exists only for backward compatibility.  Use setTabulatedFunctionParameters() instead.
-     * If the specified function is not a Continuous1DFunction, this throws an exception.
+     * @deprecated This method exists only for backward compatibility.  Call setFunctionParameters() on the TabulatedFunction
+     * object instead.  If the specified function is not a Continuous1DFunction, this throws an exception.
      */
     void setFunctionParameters(int index, const std::string& name, const std::vector<double>& values, double min, double max);
     /**
-     * Update the per-bond parameters in a Context to match those stored in this Force object.  This method provides
+     * Update the per-bond parameters and tabulated functions in a Context to match those stored in this Force object.  This method provides
      * an efficient method to update certain parameters in an existing Context without needing to reinitialize it.
      * Simply call setBondParameters() to modify this object's parameters, then call updateParametersInContext()
      * to copy them over to the Context.
      *
-     * This method has several limitations.  The only information it updates is the values of per-bond parameters.
-     * All other aspects of the Force (such as the energy function) are unaffected and can only be changed by reinitializing
-     * the Context.  The set of particles involved in a bond cannot be changed, nor can new bonds be added.
+     * This method has several limitations.  The only information it updates is the values of per-bond parameters and tabulated
+     * functions.  All other aspects of the Force (such as the energy function) are unaffected and can only be changed by reinitializing
+     * the Context.  The set of particles involved in a bond cannot be changed, nor can new bonds be added.  Also, while the
+     * tabulated values of a function can change, everything else about it (its dimensions, the data range) must not be changed.
      */
     void updateParametersInContext(Context& context);
     /**

@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2012 Stanford University and the Authors.           *
+ * Portions copyright (c) 2012-2023 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -40,14 +38,17 @@ namespace OpenMM {
 
 class OPENMM_EXPORT ReferenceVirtualSites {
 public:
+    ReferenceVirtualSites(const System& system);
     /**
      * Compute the positions of all virtual sites.
      */
-    static void computePositions(const OpenMM::System& system, std::vector<OpenMM::Vec3>& atomCoordinates);
+    void computePositions(const OpenMM::System& system, std::vector<OpenMM::Vec3>& atomCoordinates, const Vec3* boxVectors) const;
     /**
      * Distribute forces from virtual sites to the atoms they are based on.
      */
-    static void distributeForces(const OpenMM::System& system, const std::vector<OpenMM::Vec3>& atomCoordinates, std::vector<OpenMM::Vec3>& forces);
+    void distributeForces(const System& system, const std::vector<Vec3>& atomCoordinates, std::vector<Vec3>& forces, const Vec3* boxVectors) const;
+private:
+    std::vector<int> order;
 };
 
 } // namespace OpenMM

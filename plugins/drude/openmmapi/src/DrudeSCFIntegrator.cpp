@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2013 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -30,10 +28,11 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/DrudeSCFIntegrator.h"
+#include "openmm/DrudeKernels.h"
 #include "openmm/Context.h"
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ContextImpl.h"
-#include "openmm/DrudeKernels.h"
+#include "openmm/internal/DrudeHelpers.h"
 #include <cmath>
 #include <ctime>
 #include <string>
@@ -42,43 +41,39 @@ using namespace OpenMM;
 using std::string;
 using std::vector;
 
-DrudeSCFIntegrator::DrudeSCFIntegrator(double stepSize) {
+DrudeSCFIntegrator::DrudeSCFIntegrator(double stepSize) : DrudeIntegrator(stepSize)
+{
+    setDrudeTemperature(0.0);  // This is only used to initialize velocities for this integrator
     setStepSize(stepSize);
-    setMinimizationErrorTolerance(0.1);
+    setMinimizationErrorTolerance(1.0);
     setConstraintTolerance(1e-5);
+    setMaxDrudeDistance(0.0);
 }
 
 void DrudeSCFIntegrator::initialize(ContextImpl& contextRef) {
     if (owner != NULL && &contextRef.getOwner() != owner)
         throw OpenMMException("This Integrator is already bound to a context");
-    const DrudeForce* force = NULL;
-    const System& system = contextRef.getSystem();
-    for (int i = 0; i < system.getNumForces(); i++)
-        if (dynamic_cast<const DrudeForce*>(&system.getForce(i)) != NULL) {
-            if (force == NULL)
-                force = dynamic_cast<const DrudeForce*>(&system.getForce(i));
-            else
-                throw OpenMMException("The System contains multiple DrudeForces");
-        }
-    if (force == NULL)
-        throw OpenMMException("The System does not contain a DrudeForce");
+    const DrudeForce* force = getDrudeForce(contextRef);
+    if (getMaxDrudeDistance() != 0.0)
+        throw OpenMMException("DrudeSCFIntegrator does not currently support setting max Drude distance");
     context = &contextRef;
     owner = &contextRef.getOwner();
     kernel = context->getPlatform().createKernel(IntegrateDrudeSCFStepKernel::Name(), contextRef);
     kernel.getAs<IntegrateDrudeSCFStepKernel>().initialize(contextRef.getSystem(), *this, *force);
 }
 
+void DrudeSCFIntegrator::setMinimizationErrorTolerance(double tol) {
+    if (tol <= 0)
+        throw OpenMMException("Minimization error tolerance must be positive");
+    tolerance = tol;
+}
+
 void DrudeSCFIntegrator::cleanup() {
     kernel = Kernel();
 }
 
-void DrudeSCFIntegrator::stateChanged(State::DataType changed) {
-}
-
 vector<string> DrudeSCFIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateDrudeSCFStepKernel::Name());
-    return names;
+    return {IntegrateDrudeSCFStepKernel::Name()};
 }
 
 double DrudeSCFIntegrator::computeKineticEnergy() {

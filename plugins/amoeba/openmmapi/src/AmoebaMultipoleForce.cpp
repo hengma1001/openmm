@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMAmoeba                                *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors:                                                                   *
  * Contributors:                                                              *
  *                                                                            *
@@ -33,6 +31,7 @@
 #include "openmm/OpenMMException.h"
 #include "openmm/AmoebaMultipoleForce.h"
 #include "openmm/internal/AmoebaMultipoleForceImpl.h"
+#include "SimTKOpenMMRealType.h"
 #include <stdio.h>
 
 using namespace OpenMM;
@@ -40,11 +39,15 @@ using std::string;
 using std::vector;
 
 AmoebaMultipoleForce::AmoebaMultipoleForce() : nonbondedMethod(NoCutoff), polarizationType(Mutual), pmeBSplineOrder(5), cutoffDistance(1.0), ewaldErrorTol(1e-4), mutualInducedMaxIterations(60),
-                                               mutualInducedTargetEpsilon(1.0e-02), scalingDistanceCutoff(100.0), electricConstant(138.9354558456), alpha(0.0), nx(0), ny(0), nz(0) {
+                                               mutualInducedTargetEpsilon(1e-5), scalingDistanceCutoff(100.0), electricConstant(ONE_4PI_EPS0), alpha(0.0), nx(0), ny(0), nz(0) {
     extrapolationCoefficients.push_back(-0.154);
     extrapolationCoefficients.push_back(0.017);
     extrapolationCoefficients.push_back(0.658);
     extrapolationCoefficients.push_back(0.474);
+}
+
+int AmoebaMultipoleForce::getNumMultipoles() const {
+    return multipoles.size();
 }
 
 AmoebaMultipoleForce::NonbondedMethod AmoebaMultipoleForce::getNonbondedMethod() const {

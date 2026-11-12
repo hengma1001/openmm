@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,7 +32,12 @@
 
 #include "openmm/Platform.h"
 #include "openmm/System.h"
+#include "openmm/internal/ThreadPool.h"
 #include "openmm/internal/windowsExport.h"
+#include "ReferenceConstraints.h"
+#include "ReferenceVirtualSites.h"
+#include <map>
+#include <vector>
 
 namespace OpenMM {
 
@@ -58,17 +61,20 @@ public:
 
 class OPENMM_EXPORT ReferencePlatform::PlatformData {
 public:
-    PlatformData(const System& system);
+    PlatformData(const System& system, int numThreads);
     ~PlatformData();
-    int numParticles, stepCount;
+    int numParticles;
+    long long stepCount;
     double time;
-    void* positions;
-    void* velocities;
-    void* forces;
-    void* periodicBoxSize;
-    void* periodicBoxVectors;
-    void* constraints;
-    void* energyParameterDerivatives;
+    ThreadPool threads;
+    std::vector<Vec3>* positions;
+    std::vector<Vec3>* velocities;
+    std::vector<Vec3>* forces;
+    Vec3* periodicBoxSize;
+    Vec3* periodicBoxVectors;
+    ReferenceConstraints* constraints;
+    ReferenceVirtualSites* virtualSites;
+    std::map<std::string, double>* energyParameterDerivatives;
 };
 } // namespace OpenMM
 

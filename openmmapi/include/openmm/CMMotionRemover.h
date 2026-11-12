@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008 Stanford University and the Authors.           *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -39,8 +37,11 @@
 namespace OpenMM {
 
 /**
- * This class prevents the center of mass of a System from drifting.  At each time step, it calculates the
+ * This class prevents the center of mass of a System from drifting.  It periodically calculates the
  * center of mass momentum, then adjusts the individual particle velocities to make it zero.
+ *
+ * CMMotionRemover is an effective way to prevent the system from drifting, but it is not a rigorous constraint.
+ * The center of mass may still move slightly, and may still be observed to have a small nonzero velocity.
  */
 
 class OPENMM_EXPORT CMMotionRemover : public Force {
@@ -58,9 +59,7 @@ public:
     /**
      * Set the frequency (in time steps) at which center of mass motion should be removed
      */
-    void setFrequency(int freq) {
-        frequency = freq;
-    }
+    void setFrequency(int freq);
     /**
      * Returns whether or not this force makes use of periodic boundary
      * conditions.

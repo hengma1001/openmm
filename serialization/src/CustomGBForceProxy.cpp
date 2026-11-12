@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void CustomGBForceProxy::serialize(const void* object, SerializationNode& node) 
     node.setIntProperty("version", 2);
     const CustomGBForce& force = *reinterpret_cast<const CustomGBForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setIntProperty("method", (int) force.getNonbondedMethod());
     node.setDoubleProperty("cutoff", force.getCutoffDistance());
     SerializationNode& perParticleParams = node.createChildNode("PerParticleParameters");
@@ -77,12 +76,12 @@ void CustomGBForceProxy::serialize(const void* object, SerializationNode& node) 
     for (int i = 0; i < force.getNumParticles(); i++) {
         vector<double> params;
         force.getParticleParameters(i, params);
-        SerializationNode& node = particles.createChildNode("Particle");
+        SerializationNode& particle = particles.createChildNode("Particle");
         for (int j = 0; j < (int) params.size(); j++) {
             stringstream key;
             key << "param";
             key << j+1;
-            node.setDoubleProperty(key.str(), params[j]);
+            particle.setDoubleProperty(key.str(), params[j]);
         }
     }
     SerializationNode& exclusions = node.createChildNode("Exclusions");
@@ -104,6 +103,7 @@ void* CustomGBForceProxy::deserialize(const SerializationNode& node) const {
     try {
         CustomGBForce* force = new CustomGBForce();
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         force->setNonbondedMethod((CustomGBForce::NonbondedMethod) node.getIntProperty("method"));
         force->setCutoffDistance(node.getDoubleProperty("cutoff"));
         const SerializationNode& perParticleParams = node.getChildNode("PerParticleParameters");

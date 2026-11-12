@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2011-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2011-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -30,6 +28,7 @@
 #include "OpenCLPlatform.h"
 #include "OpenCLContext.h"
 #include "OpenCLKernels.h"
+#include "openmm/common/CommonKernels.h"
 
 namespace OpenMM {
 
@@ -81,7 +80,7 @@ private:
     class FinishComputationTask;
     OpenCLPlatform::PlatformData& data;
     std::vector<Kernel> kernels;
-    std::vector<long long> completionTimes;
+    std::vector<double> completionTimes;
     std::vector<double> contextNonbondedFractions;
     std::vector<int> tileCounts;
     OpenCLArray contextForces;
@@ -89,310 +88,6 @@ private:
     cl::Buffer* pinnedForceBuffer;
     void* pinnedPositionMemory;
     void* pinnedForceMemory;
-};
-
-/**
- * This kernel is invoked by HarmonicBondForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcHarmonicBondForceKernel : public CalcHarmonicBondForceKernel {
-public:
-    OpenCLParallelCalcHarmonicBondForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcHarmonicBondForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcHarmonicBondForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the HarmonicBondForce this kernel will be used for
-     */
-    void initialize(const System& system, const HarmonicBondForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the HarmonicBondForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const HarmonicBondForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomBondForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcCustomBondForceKernel : public CalcCustomBondForceKernel {
-public:
-    OpenCLParallelCalcCustomBondForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomBondForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomBondForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomBondForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomBondForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomBondForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomBondForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by HarmonicAngleForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcHarmonicAngleForceKernel : public CalcHarmonicAngleForceKernel {
-public:
-    OpenCLParallelCalcHarmonicAngleForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcHarmonicAngleForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcHarmonicAngleForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the HarmonicAngleForce this kernel will be used for
-     */
-    void initialize(const System& system, const HarmonicAngleForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the HarmonicAngleForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const HarmonicAngleForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomAngleForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcCustomAngleForceKernel : public CalcCustomAngleForceKernel {
-public:
-    OpenCLParallelCalcCustomAngleForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomAngleForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomAngleForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomAngleForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomAngleForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomAngleForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomAngleForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by PeriodicTorsionForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcPeriodicTorsionForceKernel : public CalcPeriodicTorsionForceKernel {
-public:
-    OpenCLParallelCalcPeriodicTorsionForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcPeriodicTorsionForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcPeriodicTorsionForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the PeriodicTorsionForce this kernel will be used for
-     */
-    void initialize(const System& system, const PeriodicTorsionForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    class Task;
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the PeriodicTorsionForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const PeriodicTorsionForce& force);
-private:
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by RBTorsionForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcRBTorsionForceKernel : public CalcRBTorsionForceKernel {
-public:
-    OpenCLParallelCalcRBTorsionForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcRBTorsionForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcRBTorsionForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the RBTorsionForce this kernel will be used for
-     */
-    void initialize(const System& system, const RBTorsionForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the RBTorsionForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const RBTorsionForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CMAPTorsionForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcCMAPTorsionForceKernel : public CalcCMAPTorsionForceKernel {
-public:
-    OpenCLParallelCalcCMAPTorsionForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCMAPTorsionForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCMAPTorsionForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CMAPTorsionForce this kernel will be used for
-     */
-    void initialize(const System& system, const CMAPTorsionForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CMAPTorsionForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CMAPTorsionForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomTorsionForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcCustomTorsionForceKernel : public CalcCustomTorsionForceKernel {
-public:
-    OpenCLParallelCalcCustomTorsionForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomTorsionForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomTorsionForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomTorsionForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomTorsionForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomTorsionForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomTorsionForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
 };
 
 /**
@@ -425,10 +120,14 @@ public:
     /**
      * Copy changed parameters over to a context.
      *
-     * @param context    the context to copy parameters to
-     * @param force      the NonbondedForce to copy the parameters from
+     * @param context        the context to copy parameters to
+     * @param force          the NonbondedForce to copy the parameters from
+     * @param firstParticle  the index of the first particle whose parameters might have changed
+     * @param lastParticle   the index of the last particle whose parameters might have changed
+     * @param firstException the index of the first exception whose parameters might have changed
+     * @param lastException  the index of the last exception whose parameters might have changed
      */
-    void copyParametersToContext(ContextImpl& context, const NonbondedForce& force);
+    void copyParametersToContext(ContextImpl& context, const NonbondedForce& force, int firstParticle, int lastParticle, int firstException, int lastException);
     /**
      * Get the parameters being used for PME.
      *
@@ -447,158 +146,6 @@ public:
      * @param nz      the number of grid points along the Z axis
      */
     void getLJPMEParameters(double& alpha, int& nx, int& ny, int& nz) const;
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomNonbondedForce to calculate the forces acting on the system.
- */
-class OpenCLParallelCalcCustomNonbondedForceKernel : public CalcCustomNonbondedForceKernel {
-public:
-    OpenCLParallelCalcCustomNonbondedForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomNonbondedForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomNonbondedForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomNonbondedForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomNonbondedForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomNonbondedForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomNonbondedForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomExternalForce to calculate the forces acting on the system and the energy of the system.
- */
-class OpenCLParallelCalcCustomExternalForceKernel : public CalcCustomExternalForceKernel {
-public:
-    OpenCLParallelCalcCustomExternalForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomExternalForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomExternalForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomExternalForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomExternalForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomExternalForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomExternalForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomHbondForce to calculate the forces acting on the system.
- */
-class OpenCLParallelCalcCustomHbondForceKernel : public CalcCustomHbondForceKernel {
-public:
-    OpenCLParallelCalcCustomHbondForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomHbondForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomHbondForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomHbondForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomHbondForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomHbondForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomHbondForce& force);
-private:
-    class Task;
-    OpenCLPlatform::PlatformData& data;
-    std::vector<Kernel> kernels;
-};
-
-/**
- * This kernel is invoked by CustomCompoundBondForce to calculate the forces acting on the system.
- */
-class OpenCLParallelCalcCustomCompoundBondForceKernel : public CalcCustomCompoundBondForceKernel {
-public:
-    OpenCLParallelCalcCustomCompoundBondForceKernel(std::string name, const Platform& platform, OpenCLPlatform::PlatformData& data, const System& system);
-    OpenCLCalcCustomCompoundBondForceKernel& getKernel(int index) {
-        return dynamic_cast<OpenCLCalcCustomCompoundBondForceKernel&>(kernels[index].getImpl());
-    }
-    /**
-     * Initialize the kernel.
-     *
-     * @param system     the System this kernel will be applied to
-     * @param force      the CustomCompoundBondForce this kernel will be used for
-     */
-    void initialize(const System& system, const CustomCompoundBondForce& force);
-    /**
-     * Execute the kernel to calculate the forces and/or energy.
-     *
-     * @param context        the context in which to execute this kernel
-     * @param includeForces  true if forces should be calculated
-     * @param includeEnergy  true if the energy should be calculated
-     * @return the potential energy due to the force
-     */
-    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
-    /**
-     * Copy changed parameters over to a context.
-     *
-     * @param context    the context to copy parameters to
-     * @param force      the CustomCompoundBondForce to copy the parameters from
-     */
-    void copyParametersToContext(ContextImpl& context, const CustomCompoundBondForce& force);
 private:
     class Task;
     OpenCLPlatform::PlatformData& data;

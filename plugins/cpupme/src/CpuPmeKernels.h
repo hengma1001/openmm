@@ -4,14 +4,12 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
- * Contributors:                                                              *
+ * Contributors: Evan Pretti                                                  *
  *                                                                            *
  * Permission is hereby granted, free of charge, to any person obtaining a    *
  * copy of this software and associated documentation files (the "Software"), *
@@ -38,21 +36,23 @@
 #include "openmm/Vec3.h"
 #include "openmm/internal/ThreadPool.h"
 #include <atomic>
-#include <fftw3.h>
-#include <pthread.h>
+#include <complex>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace OpenMM {
 
 /**
  * This is an optimized CPU implementation of CalcPmeReciprocalForceKernel.  It is both
- * vectorized (requiring SSE 4.1) and multithreaded.  It uses FFTW to perform the FFTs.
+ * vectorized (requiring SSE 4.1) and multithreaded.  It uses PocketFFT to perform the FFTs.
  */
 
 class OPENMM_EXPORT_PME CpuCalcPmeReciprocalForceKernel : public CalcPmeReciprocalForceKernel {
 public:
-    CpuCalcPmeReciprocalForceKernel(std::string name, const Platform& platform) : CalcPmeReciprocalForceKernel(name, platform),
-            hasCreatedPlan(false), isDeleted(false), realGrid(NULL), complexGrid(NULL) {
+    CpuCalcPmeReciprocalForceKernel(const std::string& name, const Platform& platform) : CalcPmeReciprocalForceKernel(name, platform),
+            isDeleted(false) {
     }
     /**
      * Initialize the kernel.
@@ -61,19 +61,22 @@ public:
      * @param gridy        the y size of the PME grid
      * @param gridz        the z size of the PME grid
      * @param numParticles the number of particles in the system
+     * @param indices      indices of particles to compute charge derivatives for
      * @param alpha        the Ewald blending parameter
      * @param deterministic whether it should attempt to make the resulting forces deterministic
      */
-    void initialize(int xsize, int ysize, int zsize, int numParticles, double alpha, bool deterministic);
+    void initialize(int xsize, int ysize, int zsize, int numParticles, const std::vector<int>& indices, double alpha, bool deterministic);
     ~CpuCalcPmeReciprocalForceKernel();
     /**
      * Begin computing the force and energy.
-     * 
-     * @param io                  an object that coordinates data transfer
-     * @param periodicBoxVectors  the vectors defining the periodic box (measured in nm)
-     * @param includeEnergy       true if potential energy should be computed
+     *
+     * @param io                        an object that coordinates data transfer
+     * @param periodicBoxVectors        the vectors defining the periodic box (measured in nm)
+     * @param includeEnergy             true if potential energy should be computed
+     * @param includeForces             true if forces should be computed
+     * @param includeChargeDerivatives  true if charge derivatives should be computed
      */
-    void beginComputation(IO& io, const Vec3* periodicBoxVectors, bool includeEnergy);
+    void beginComputation(IO& io, const Vec3* periodicBoxVectors, bool includeEnergy, bool includeForces, bool includeChargeDerivatives);
     /**
      * Finish computing the force and energy.
      * 
@@ -104,34 +107,36 @@ public:
     void getPMEParameters(double& alpha, int& nx, int& ny, int& nz) const;
 private:
     /**
-     * Select a size for one grid dimension that FFTW can handle efficiently.
+     * Select a size for one grid dimension that PocketFFT can handle efficiently.
      */
-    int findFFTDimension(int minimum, bool isZ);
+    int findFFTDimension(int minimum);
     static bool hasInitializedThreads;
     static int numThreads;
-    int gridx, gridy, gridz, numParticles;
+    int gridx, gridy, gridz, numParticles, numIndices;
     double alpha;
     bool deterministic;
-    bool hasCreatedPlan, isFinished, isDeleted;
+    bool isFinished, isDeleted;
+    std::vector<int> chargeIndices;
     std::vector<float> force;
+    std::vector<float> chargeDerivatives;
     std::vector<float> bsplineModuli[3];
     std::vector<float> recipEterm;
     Vec3 lastBoxVectors[3];
     std::vector<float> threadEnergy;
-    std::vector<float*> tempGrid;
-    float* realGrid;
-    fftwf_complex* complexGrid;
-    fftwf_plan forwardFFT, backwardFFT;
+    std::vector<std::vector<float> > realGrids;
+    std::vector<std::complex<float> > complexGrid;
+    std::vector<std::size_t> gridShape, fftAxes;
+    std::vector<std::ptrdiff_t> realGridStride, complexGridStride;
     int waitCount;
-    pthread_cond_t startCondition, endCondition;
-    pthread_mutex_t lock;
-    pthread_t mainThread;
+    std::condition_variable startCondition, endCondition;
+    std::mutex lock;
+    std::thread mainThread;
     // The following variables are used to store information about the calculation currently being performed.
     IO* io;
     float energy;
     float* posq;
     Vec3 periodicBoxVectors[3], recipBoxVectors[3];
-    bool includeEnergy;
+    bool includeEnergy, includeForces, includeChargeDerivatives;
     std::atomic<int> atomicCounter;
 };
 
@@ -139,13 +144,13 @@ private:
 
 /**
  * This is an optimized CPU implementation of CalcDispersionPmeReciprocalForceKernel.  It is both
- * vectorized (requiring SSE 4.1) and multithreaded.  It uses FFTW to perform the FFTs.
+ * vectorized (requiring SSE 4.1) and multithreaded.  It uses PocketFFT to perform the FFTs.
  */
 
-class OPENMM_EXPORT_PME CpuCalcDispersionPmeReciprocalForceKernel : public CalcPmeReciprocalForceKernel {
+class OPENMM_EXPORT_PME CpuCalcDispersionPmeReciprocalForceKernel : public CalcDispersionPmeReciprocalForceKernel {
 public:
-    CpuCalcDispersionPmeReciprocalForceKernel(std::string name, const Platform& platform) : CalcPmeReciprocalForceKernel(name, platform),
-            hasCreatedPlan(false), isDeleted(false), realGrid(NULL), complexGrid(NULL)  {
+    CpuCalcDispersionPmeReciprocalForceKernel(const std::string& name, const Platform& platform) : CalcDispersionPmeReciprocalForceKernel(name, platform),
+            isDeleted(false) {
     }
     /**
      * Initialize the kernel.
@@ -166,14 +171,14 @@ public:
      * @param periodicBoxVectors  the vectors defining the periodic box (measured in nm)
      * @param includeEnergy       true if potential energy should be computed
      */
-    void beginComputation(IO& io, const Vec3* periodicBoxVectors, bool includeEnergy);
+    void beginComputation(CalcPmeReciprocalForceKernel::IO& io, const Vec3* periodicBoxVectors, bool includeEnergy);
     /**
      * Finish computing the force and energy.
      * 
      * @param io   an object that coordinates data transfer
      * @return the potential energy due to the PME reciprocal space interactions
      */
-    double finishComputation(IO& io);
+    double finishComputation(CalcPmeReciprocalForceKernel::IO& io);
     /**
      * This routine contains the code executed by the main thread.
      */
@@ -198,30 +203,30 @@ public:
 private:
     class ComputeTask;
     /**
-     * Select a size for one grid dimension that FFTW can handle efficiently.
+     * Select a size for one grid dimension that PocketFFT can handle efficiently.
      */
-    int findFFTDimension(int minimum, bool isZ);
+    int findFFTDimension(int minimum);
     static bool hasInitializedThreads;
     static int numThreads;
     int gridx, gridy, gridz, numParticles;
     double alpha;
     bool deterministic;
-    bool hasCreatedPlan, isFinished, isDeleted;
+    bool isFinished, isDeleted;
     std::vector<float> force;
     std::vector<float> bsplineModuli[3];
     std::vector<float> recipEterm;
     Vec3 lastBoxVectors[3];
     std::vector<float> threadEnergy;
-    std::vector<float*> tempGrid;
-    float* realGrid;
-    fftwf_complex* complexGrid;
-    fftwf_plan forwardFFT, backwardFFT;
+    std::vector<std::vector<float> > realGrids;
+    std::vector<std::complex<float> > complexGrid;
+    std::vector<std::size_t> gridShape, fftAxes;
+    std::vector<std::ptrdiff_t> realGridStride, complexGridStride;
     int waitCount;
-    pthread_cond_t startCondition, endCondition;
-    pthread_mutex_t lock;
-    pthread_t mainThread;
+    std::condition_variable startCondition, endCondition;
+    std::mutex lock;
+    std::thread mainThread;
     // The following variables are used to store information about the calculation currently being performed.
-    IO* io;
+    CalcPmeReciprocalForceKernel::IO* io;
     float energy;
     float* posq;
     Vec3 periodicBoxVectors[3], recipBoxVectors[3];

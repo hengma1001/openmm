@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2009 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -27,17 +25,19 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.      *
  * -------------------------------------------------------------------------- */
 
-#include "windowsExportOpenCL.h"
+#include "openmm/common/ComputeForceInfo.h"
+#include "openmm/common/windowsExportCommon.h"
 #include <vector>
 
 namespace OpenMM {
 
 /**
- * This class is used by the OpenCL implementation of a Force class to convey information
- * about the behavior and requirements of that force.
+ * This class exists primarily for backward compatibility.  Beyond the features of
+ * ComputeForceInfo, it adds the ability to specify a required number of force buffers.
+ * Using this mechanism is equivalent to calling requestForceBuffers() on the OpenCLContext.
  */
 
-class OPENMM_EXPORT_OPENCL OpenCLForceInfo {
+class OPENMM_EXPORT_COMMON OpenCLForceInfo : public ComputeForceInfo {
 public:
     OpenCLForceInfo(int requiredForceBuffers) : requiredForceBuffers(requiredForceBuffers) {
     }
@@ -47,22 +47,6 @@ public:
     int getRequiredForceBuffers() {
         return requiredForceBuffers;
     }
-    /**
-     * Get whether or not two particles have identical force field parameters.
-     */
-    virtual bool areParticlesIdentical(int particle1, int particle2);
-    /**
-     * Get the number of particle groups defined by this force.
-     */
-    virtual int getNumParticleGroups();
-    /**
-     * Get the list of particles in a particular group.
-     */
-    virtual void getParticlesInGroup(int index, std::vector<int>& particles);
-    /**
-     * Get whether two particle groups are identical.
-     */
-    virtual bool areGroupsIdentical(int group1, int group2);
 private:
     int requiredForceBuffers;
 };

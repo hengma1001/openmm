@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2009 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -27,36 +25,18 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.      *
  * -------------------------------------------------------------------------- */
 
-#include "windowsExportCuda.h"
+#include "openmm/common/ComputeForceInfo.h"
+#include "openmm/common/windowsExportCommon.h"
 #include <vector>
 
 namespace OpenMM {
 
 /**
- * This class is used by the Cuda implementation of a Force class to convey information
- * about the behavior and requirements of that force.
+ * This class exists solely for backward compatibility.  It adds no features beyond the ones
+ * in ComputeForceInfo.
  */
 
-class OPENMM_EXPORT_CUDA CudaForceInfo {
-public:
-    CudaForceInfo() {
-    }
-    /**
-     * Get whether or not two particles have identical force field parameters.
-     */
-    virtual bool areParticlesIdentical(int particle1, int particle2);
-    /**
-     * Get the number of particle groups defined by this force.
-     */
-    virtual int getNumParticleGroups();
-    /**
-     * Get the list of particles in a particular group.
-     */
-    virtual void getParticlesInGroup(int index, std::vector<int>& particles);
-    /**
-     * Get whether two particle groups are identical.
-     */
-    virtual bool areGroupsIdentical(int group1, int group2);
+class OPENMM_EXPORT_COMMON CudaForceInfo : public ComputeForceInfo {
 };
 
 } // namespace OpenMM

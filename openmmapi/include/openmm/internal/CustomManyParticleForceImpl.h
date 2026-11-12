@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -65,21 +63,14 @@ public:
     std::vector<std::string> getKernelNames();
     void updateParametersInContext(ContextImpl& context);
     /**
-     * This is a utility routine that parses the energy expression, identifies the angles and dihedrals
-     * in it, and replaces them with variables.
+     * This is a utility routine that parses the energy expression, identifies particle based functions,
+     * and replaces them with equivalent point based ones.
      *
      * @param force     the CustomManyParticleForce to process
      * @param functions definitions of custom function that may appear in the expression
-     * @param distances on exit, this will contain an entry for each distance used in the expression.  The key is the name
-     *                  of the corresponding variable, and the value is the list of particle indices.
-     * @param angles    on exit, this will contain an entry for each angle used in the expression.  The key is the name
-     *                  of the corresponding variable, and the value is the list of particle indices.
-     * @param dihedrals on exit, this will contain an entry for each dihedral used in the expression.  The key is the name
-     *                  of the corresponding variable, and the value is the list of particle indices.
      * @return a Parsed expression for the energy
      */
-    static Lepton::ParsedExpression prepareExpression(const CustomManyParticleForce& force, const std::map<std::string, Lepton::CustomFunction*>& functions, std::map<std::string, std::vector<int> >& distances,
-            std::map<std::string, std::vector<int> >& angles, std::map<std::string, std::vector<int> >& dihedrals);
+    static Lepton::ParsedExpression prepareExpression(const CustomManyParticleForce& force, const std::map<std::string, Lepton::CustomFunction*>& functions);
     /**
      * Analyze the type filters for a force and build a set of arrays that can be used for reordering the
      * particles in an interaction.
@@ -98,8 +89,7 @@ public:
 private:
     class FunctionPlaceholder;
     static Lepton::ExpressionTreeNode replaceFunctions(const Lepton::ExpressionTreeNode& node, std::map<std::string, int> atoms,
-            std::map<std::string, std::vector<int> >& distances, std::map<std::string, std::vector<int> >& angles,
-            std::map<std::string, std::vector<int> >& dihedrals, std::set<std::string>& variables);
+            const std::map<std::string, Lepton::CustomFunction*>& functions, std::set<std::string>& variables);
     static void generatePermutations(std::vector<int>& values, int numFixed, std::vector<std::vector<int> >& result);
     const CustomManyParticleForce& owner;
     Kernel kernel;

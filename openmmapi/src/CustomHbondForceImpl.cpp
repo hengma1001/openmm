@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,6 +30,7 @@
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/CustomHbondForceImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/kernels.h"
 #include "lepton/Operation.h"
 #include "lepton/Parser.h"
@@ -72,6 +71,7 @@ public:
 };
 
 CustomHbondForceImpl::CustomHbondForceImpl(const CustomHbondForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomHbondForceImpl::~CustomHbondForceImpl() {
@@ -173,21 +173,19 @@ void CustomHbondForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("CustomHbondForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("CustomHbondForce: "+Messages::cutoffTooLarge);
     }
     kernel.getAs<CalcCustomHbondForceKernel>().initialize(context.getSystem(), owner);
 }
 
 double CustomHbondForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomHbondForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> CustomHbondForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcCustomHbondForceKernel::Name());
-    return names;
+    return {CalcCustomHbondForceKernel::Name()};
 }
 
 map<string, double> CustomHbondForceImpl::getDefaultParameters() {
@@ -230,9 +228,9 @@ ExpressionTreeNode CustomHbondForceImpl::replaceFunctions(const ExpressionTreeNo
     const Operation& op = node.getOperation();
     if (op.getId() == Operation::VARIABLE && variables.find(op.getName()) == variables.end())
         throw OpenMMException("CustomHBondForce: Unknown variable '"+op.getName()+"'");
-    if (op.getId() != Operation::CUSTOM || op.getNumArguments() < 2)
+    if (op.getId() != Operation::CUSTOM || (op.getName() != "distance" && op.getName() != "angle" && op.getName() != "dihedral"))
     {
-        // This is not an angle or dihedral, so process its children.
+        // This is not a distance, angle, or dihedral, so process its children.
 
         vector<ExpressionTreeNode> children;
         for (auto& child : node.getChildren())

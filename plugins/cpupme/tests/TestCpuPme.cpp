@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013 Stanford University and the Authors.           *
+ * Portions copyright (c) 2013-2025 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -43,6 +41,7 @@
 #include "openmm/Units.h"
 #include "../src/CpuPmeKernels.h"
 #include "SimTKOpenMMRealType.h"
+#include "ReferencePME.h"
 #include "sfmt/SFMT.h"
 #include <iostream>
 #include <vector>
@@ -54,11 +53,15 @@ class IO : public CalcPmeReciprocalForceKernel::IO {
 public:
     vector<float> posq;
     float* force;
+    float* derivatives;
     float* getPosq() {
         return &posq[0];
     }
     void setForce(float* force) {
         this->force = force;
+    }
+    void setChargeDerivatives(float* derivatives) {
+        this->derivatives = derivatives;
     }
 };
 
@@ -565,7 +568,7 @@ void test_water2_dpme_energies_forces_no_exclusions() {
 }
 
 
-void testPME(bool triclinic) {
+void testPME(bool triclinic, bool nonNeutral) {
     // Create a cloud of random point charges.
 
     const int numParticles = 51;
@@ -590,15 +593,20 @@ void testPME(bool triclinic) {
     OpenMM_SFMT::SFMT sfmt;
     init_gen_rand(0, sfmt);
 
+    vector<double> testCharges;
+    vector<int> testIndices;
     for (int i = 0; i < numParticles; i++) {
         system.addParticle(1.0);
-        force->addParticle(-1.0+i*2.0/(numParticles-1), 1.0, 0.0);
+        double testCharge = -1.0+i*2.0/(numParticles-1) + (nonNeutral ? 0.001 * i * i : 0);
+        force->addParticle(testCharge, 1.0, 0.0);
         positions[i] = Vec3(boxWidth*genrand_real2(sfmt), boxWidth*genrand_real2(sfmt), boxWidth*genrand_real2(sfmt));
+        testCharges.push_back(testCharge);
+        testIndices.push_back(i);
     }
     force->setNonbondedMethod(NonbondedForce::PME);
     force->setCutoffDistance(cutoff);
     force->setReciprocalSpaceForceGroup(1);
-    force->setEwaldErrorTolerance(1e-4);
+    force->setEwaldErrorTolerance(5e-5);
     
     // Compute the reciprocal space forces with the reference platform.
     
@@ -615,6 +623,7 @@ void testPME(bool triclinic) {
     NonbondedForceImpl::calcPMEParameters(system, *force, alpha, gridx, gridy, gridz, false);
     CpuCalcPmeReciprocalForceKernel pme(CalcPmeReciprocalForceKernel::Name(), platform);
     IO io;
+    double sumCharges = 0;
     double sumSquaredCharges = 0;
     for (int i = 0; i < numParticles; i++) {
         io.posq.push_back(positions[i][0]);
@@ -623,10 +632,94 @@ void testPME(bool triclinic) {
         double charge, sigma, epsilon;
         force->getParticleParameters(i, charge, sigma, epsilon);
         io.posq.push_back(charge);
+        sumCharges += charge;
         sumSquaredCharges += charge*charge;
     }
     double ewaldSelfEnergy = -ONE_4PI_EPS0*alpha*sumSquaredCharges/sqrt(M_PI);
-    pme.initialize(gridx, gridy, gridz, numParticles, alpha, true);
+    double ewaldPlasmaEnergy = -sumCharges*sumCharges/(8.0*EPSILON0*alpha*alpha*boxVectors[0][0]*boxVectors[1][1]*boxVectors[2][2]);
+    pme.initialize(gridx, gridy, gridz, numParticles, testIndices, alpha, true);
+    pme.beginComputation(io, boxVectors, true, true, true);
+    double energy = pme.finishComputation(io);
+
+    // See if they match.
+    
+    ASSERT_EQUAL_TOL(refState.getPotentialEnergy(), energy+ewaldSelfEnergy+ewaldPlasmaEnergy, 1e-3);
+    for (int i = 0; i < numParticles; i++) {
+        ASSERT_EQUAL_VEC(refState.getForces()[i], Vec3(io.force[4*i], io.force[4*i+1], io.force[4*i+2]), 1e-3);
+    }
+
+    // Get charge derivatives from the reference PME implementation.
+
+    int gridSize[3] = {gridx, gridy, gridz};
+    ReferencePME referencePme(alpha, numParticles, gridSize, 5, 1);
+    vector<double> testDerivatives(numParticles);
+    referencePme.exec_charge_derivatives(positions, testDerivatives, testIndices, testCharges, boxVectors);
+
+    // See if they match.
+    for (int i = 0; i < numParticles; i++) {
+        ASSERT_EQUAL_TOL(testDerivatives[i], io.derivatives[i], 1e-3);
+    }
+}
+
+void testLJPME(bool triclinic) {
+    // Create a cloud of random LJ particles.
+
+    const int numParticles = 51;
+    const double boxWidth = 5.0;
+    const double cutoff = 1.0;
+    const double alpha = 2.91842;
+    Vec3 boxVectors[3];
+    if (triclinic) {
+        boxVectors[0] = Vec3(boxWidth, 0, 0);
+        boxVectors[1] = Vec3(0.2*boxWidth, boxWidth, 0);
+        boxVectors[2] = Vec3(-0.3*boxWidth, -0.1*boxWidth, boxWidth);
+    }
+    else {
+        boxVectors[0] = Vec3(boxWidth, 0, 0);
+        boxVectors[1] = Vec3(0, boxWidth, 0);
+        boxVectors[2] = Vec3(0, 0, boxWidth);
+    }
+    System system;
+    system.setDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
+    NonbondedForce* force = new NonbondedForce();
+    system.addForce(force);
+    vector<Vec3> positions(numParticles);
+    OpenMM_SFMT::SFMT sfmt;
+    init_gen_rand(0, sfmt);
+
+    for (int i = 0; i < numParticles; i++) {
+        system.addParticle(1.0);
+        force->addParticle(0, 0.5, 1.0);
+        positions[i] = Vec3(boxWidth*genrand_real2(sfmt), boxWidth*genrand_real2(sfmt), boxWidth*genrand_real2(sfmt));
+    }
+    force->setNonbondedMethod(NonbondedForce::LJPME);
+    force->setCutoffDistance(cutoff);
+    force->setReciprocalSpaceForceGroup(1);
+    force->setLJPMEParameters(alpha, 64, 64, 64);
+    
+    // Compute the reciprocal space forces with the reference platform.
+    
+    Platform& platform = Platform::getPlatformByName("Reference");
+    VerletIntegrator integrator(0.01);
+    Context context(system, integrator, platform);
+    context.setPositions(positions);
+    State refState = context.getState(State::Forces | State::Energy, false, 1<<1);
+    
+    // Now compute them with the optimized kernel.
+    
+    CpuCalcDispersionPmeReciprocalForceKernel pme(CalcDispersionPmeReciprocalForceKernel::Name(), platform);
+    IO io;
+    double ewaldSelfEnergy = 0;
+    for (int i = 0; i < numParticles; i++) {
+        io.posq.push_back(positions[i][0]);
+        io.posq.push_back(positions[i][1]);
+        io.posq.push_back(positions[i][2]);
+        double charge, sigma, epsilon;
+        force->getParticleParameters(i, charge, sigma, epsilon);
+        io.posq.push_back(pow(sigma, 3.0) * 2.0*sqrt(epsilon));
+        ewaldSelfEnergy += pow(alpha*sigma, 6.0) * epsilon / 3.0;
+    }
+    pme.initialize(64, 64, 64, numParticles, alpha, true);
     pme.beginComputation(io, boxVectors, true);
     double energy = pme.finishComputation(io);
 
@@ -643,8 +736,12 @@ int main(int argc, char* argv[]) {
             cout << "CPU is not supported.  Exiting." << endl;
             return 0;
         }
-        testPME(false);
-        testPME(true);
+        testPME(false, false);
+        testPME(false, true);
+        testPME(true, false);
+        testPME(true, true);
+        testLJPME(false);
+        testLJPME(true);
         test_water2_dpme_energies_forces_no_exclusions();
     }
     catch(const exception& e) {

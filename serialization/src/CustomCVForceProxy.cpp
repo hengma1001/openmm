@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2017 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void CustomCVForceProxy::serialize(const void* object, SerializationNode& node) 
     node.setIntProperty("version", 0);
     const CustomCVForce& force = *reinterpret_cast<const CustomCVForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setStringProperty("energy", force.getEnergyFunction());
     SerializationNode& globalParams = node.createChildNode("GlobalParameters");
     for (int i = 0; i < force.getNumGlobalParameters(); i++) {
@@ -56,8 +55,8 @@ void CustomCVForceProxy::serialize(const void* object, SerializationNode& node) 
     }
     SerializationNode& cvs = node.createChildNode("CollectiveVariables");
     for (int i = 0; i < force.getNumCollectiveVariables(); i++) {
-        SerializationNode& node = cvs.createChildNode("CollectiveVariable").setStringProperty("name", force.getCollectiveVariableName(i));
-        node.createChildNode("Force", &force.getCollectiveVariable(i));
+        SerializationNode& cv = cvs.createChildNode("CollectiveVariable").setStringProperty("name", force.getCollectiveVariableName(i));
+        cv.createChildNode("Force", &force.getCollectiveVariable(i));
     }
     SerializationNode& functions = node.createChildNode("Functions");
     for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
@@ -72,6 +71,7 @@ void* CustomCVForceProxy::deserialize(const SerializationNode& node) const {
     try {
         CustomCVForce* force = new CustomCVForce(node.getStringProperty("energy"));
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         const SerializationNode& globalParams = node.getChildNode("GlobalParameters");
         for (auto& parameter : globalParams.getChildren())
             force->addGlobalParameter(parameter.getStringProperty("name"), parameter.getDoubleProperty("default"));

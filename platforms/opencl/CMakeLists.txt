@@ -17,9 +17,15 @@ if(BUILD_TESTING AND OPENMM_BUILD_OPENCL_TESTS)
     SUBDIRS (tests)
 endif(BUILD_TESTING AND OPENMM_BUILD_OPENCL_TESTS)
 
+find_file(OPENCL_HPP_PATH opencl.hpp "${OPENCL_INCLUDE_DIR}/CL")
+mark_as_advanced(OPENCL_HPP_PATH)
+if(OPENCL_HPP_PATH)
+    ADD_DEFINITIONS(-DHAS_OPENCL_HPP)
+endif()
+
 # The source is organized into subdirectories, but we handle them all from
 # this CMakeLists file rather than letting CMake visit them as SUBDIRS.
-SET(OPENMM_SOURCE_SUBDIRS .)
+SET(OPENMM_SOURCE_SUBDIRS . ../common)
 
 
 # Collect up information about the version of the OpenMM library we're building
@@ -76,16 +82,18 @@ INCLUDE_DIRECTORIES(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Set variables needed for encoding kernel sources into a C++ class
 
-SET(CL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
-SET(CL_SOURCE_CLASS OpenCLKernelSources)
-SET(CL_KERNELS_CPP ${CMAKE_CURRENT_BINARY_DIR}/src/${CL_SOURCE_CLASS}.cpp)
-SET(CL_KERNELS_H ${CMAKE_CURRENT_BINARY_DIR}/src/${CL_SOURCE_CLASS}.h)
-SET(SOURCE_FILES ${SOURCE_FILES} ${CL_KERNELS_CPP} ${CL_KERNELS_H})
+SET(KERNEL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+SET(KERNEL_SOURCE_CLASS OpenCLKernelSources)
+SET(KERNELS_CPP ${CMAKE_CURRENT_BINARY_DIR}/src/${KERNEL_SOURCE_CLASS}.cpp)
+SET(KERNELS_H ${CMAKE_CURRENT_BINARY_DIR}/src/${KERNEL_SOURCE_CLASS}.h)
+SET(COMMON_KERNELS_CPP ${CMAKE_CURRENT_BINARY_DIR}/../common/src/CommonKernelSources.cpp)
+SET(SOURCE_FILES ${SOURCE_FILES} ${KERNELS_CPP} ${KERNELS_H} ${COMMON_KERNELS_CPP})
 INCLUDE_DIRECTORIES(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/src)
+INCLUDE_DIRECTORIES(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/../common/src)
 
 # Install headers
 
-FILE(GLOB CORE_HEADERS include/*.h)
+FILE(GLOB CORE_HEADERS include/*.h src/opencl.hpp ${KERNELS_H})
 INSTALL_FILES(/include/openmm/opencl FILES ${CORE_HEADERS})
 
 SUBDIRS (sharedTarget)

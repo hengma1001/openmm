@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -54,7 +52,7 @@ const static char CHECKPOINT_MAGIC_BYTES[] = "OpenMM Binary Checkpoint\n";
 
 
 ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integrator, Platform* platform, const map<string, string>& properties, ContextImpl* originalContext) :
-        owner(owner), system(system), integrator(integrator), hasInitializedForces(false), hasSetPositions(false), integratorIsDeleted(false),
+        owner(owner), system(system), integrator(integrator), hasInitializedForces(false), hasSetPositions(false), integratorIsDeleted(false), hasMinimizeKernel(false),
         lastForceGroups(-1), platform(platform), platformData(NULL) {
     int numParticles = system.getNumParticles();
     if (numParticles == 0)
@@ -62,16 +60,9 @@ ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integ
     
     // Check for errors in virtual sites and massless particles.
     
-    for (int i = 0; i < numParticles; i++) {
-        if (system.isVirtualSite(i)) {
-            if (system.getParticleMass(i) != 0.0)
-                throw OpenMMException("Virtual site has nonzero mass");
-            const VirtualSite& site = system.getVirtualSite(i);
-            for (int j = 0; j < site.getNumParticles(); j++)
-                if (system.isVirtualSite(site.getParticle(j)))
-                    throw OpenMMException("A virtual site cannot depend on another virtual site");
-        }
-    }
+    for (int i = 0; i < numParticles; i++)
+        if (system.isVirtualSite(i) && system.getParticleMass(i) != 0.0)
+            throw OpenMMException("Virtual site has nonzero mass");
     set<pair<int, int> > constraintAtoms;
     for (int i = 0; i < system.getNumConstraints(); i++) {
         int particle1, particle2;
@@ -93,23 +84,28 @@ ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integ
     
     // Validate the list of properties.
 
-    const vector<string>& platformProperties = platform->getPropertyNames();
     map<string, string> validatedProperties;
-    for (auto& prop : properties) {
-        string property = prop.first;
-        if (platform->deprecatedPropertyReplacements.find(property) != platform->deprecatedPropertyReplacements.end())
-            property = platform->deprecatedPropertyReplacements[property];
-        bool valid = false;
-        for (auto& p : platformProperties)
-            if (p == property) {
-                valid = true;
-                break;
-            }
-        if (!valid)
-            throw OpenMMException("Illegal property name: "+prop.first);
-        validatedProperties[property] = prop.second;
+    if (platform != NULL) {
+        const vector<string>& platformProperties = platform->getPropertyNames();
+        for (auto& prop : properties) {
+            string property = prop.first;
+            if (platform->deprecatedPropertyReplacements.find(property) != platform->deprecatedPropertyReplacements.end())
+                property = platform->deprecatedPropertyReplacements[property];
+            bool valid = false;
+            for (auto& p : platformProperties)
+                if (p == property) {
+                    valid = true;
+                    break;
+                }
+            if (!valid)
+                throw OpenMMException("Illegal property name: "+prop.first);
+            validatedProperties[property] = prop.second;
+        }
     }
-    
+    else {
+        // There can't be any platform-specific properties if there's no platform
+    }
+
     // Find the list of kernels required.
     
     vector<string> kernelNames;
@@ -117,6 +113,7 @@ ContextImpl::ContextImpl(Context& owner, const System& system, Integrator& integ
     kernelNames.push_back(UpdateStateDataKernel::Name());
     kernelNames.push_back(ApplyConstraintsKernel::Name());
     kernelNames.push_back(VirtualSitesKernel::Name());
+    kernelNames.push_back(MinimizeKernel::Name());
     for (int i = 0; i < system.getNumForces(); ++i) {
         forceImpls.push_back(system.getForce(i).createImpl());
         vector<string> forceKernels = forceImpls[forceImpls.size()-1]->getKernelNames();
@@ -183,6 +180,9 @@ void ContextImpl::initialize() {
     for (size_t i = 0; i < forceImpls.size(); ++i) {
         forceImpls[i]->initialize(*this);
         map<string, double> forceParameters = forceImpls[i]->getDefaultParameters();
+        for (auto param : forceParameters)
+            if (parameters.find(param.first) != parameters.end() && parameters[param.first] != forceParameters[param.first])
+                throw OpenMMException("Two Forces define different default values for the parameter '"+param.first+"'");
         parameters.insert(forceParameters.begin(), forceParameters.end());
     }
     integrator.initialize(*this);
@@ -199,6 +199,7 @@ ContextImpl::~ContextImpl() {
     updateStateDataKernel = Kernel();
     applyConstraintsKernel = Kernel();
     virtualSitesKernel = Kernel();
+    minimizeKernel = Kernel();
     if (!integratorIsDeleted) {
         // The Context is being deleted before the Integrator, so call cleanup() on it now.
         
@@ -216,8 +217,16 @@ void ContextImpl::setTime(double t) {
     updateStateDataKernel.getAs<UpdateStateDataKernel>().setTime(*this, t);
 }
 
-void ContextImpl::getPositions(std::vector<Vec3>& positions) {
-    updateStateDataKernel.getAs<UpdateStateDataKernel>().getPositions(*this, positions);
+long long ContextImpl::getStepCount() const {
+    return updateStateDataKernel.getAs<const UpdateStateDataKernel>().getStepCount(*this);
+}
+
+void ContextImpl::setStepCount(long long count) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().setStepCount(*this, count);
+}
+
+void ContextImpl::getPositions(std::vector<Vec3>& positions, bool allowPeriodic) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().getPositions(*this, positions, allowPeriodic);
 }
 
 void ContextImpl::setPositions(const std::vector<Vec3>& positions) {
@@ -313,6 +322,10 @@ int& ContextImpl::getLastForceGroups() {
 
 double ContextImpl::calcKineticEnergy() {
     return integrator.computeKineticEnergy();
+}
+
+void ContextImpl::computeShiftedVelocities(double timeShift, std::vector<Vec3>& velocities) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().computeShiftedVelocities(*this, timeShift, velocities);
 }
 
 bool ContextImpl::updateContextState() {
@@ -454,6 +467,7 @@ void ContextImpl::createCheckpoint(ostream& stream) {
         stream.write((char*) &param.second, sizeof(double));
     }
     updateStateDataKernel.getAs<UpdateStateDataKernel>().createCheckpoint(*this, stream);
+    integrator.createCheckpoint(stream);
     stream.flush();
 }
 
@@ -480,7 +494,12 @@ void ContextImpl::loadCheckpoint(istream& stream) {
         parameters[name] = value;
     }
     updateStateDataKernel.getAs<UpdateStateDataKernel>().loadCheckpoint(*this, stream);
+    integrator.loadCheckpoint(stream);
     hasSetPositions = true;
+    integrator.stateChanged(State::Positions);
+    integrator.stateChanged(State::Velocities);
+    integrator.stateChanged(State::Parameters);
+    integrator.stateChanged(State::Energy);
 }
 
 void ContextImpl::systemChanged() {
@@ -489,4 +508,13 @@ void ContextImpl::systemChanged() {
 
 Context* ContextImpl::createLinkedContext(const System& system, Integrator& integrator) {
     return new Context(system, integrator, *this);
+}
+
+void ContextImpl::minimize(double tolerance, int maxIterations, MinimizationReporter* reporter) {
+    if (!hasMinimizeKernel) {
+        minimizeKernel = platform->createKernel(MinimizeKernel::Name(), *this);
+        minimizeKernel.getAs<MinimizeKernel>().initialize(system);
+        hasMinimizeKernel = true;
+    }
+    minimizeKernel.getAs<MinimizeKernel>().execute(*this, tolerance, maxIterations, reporter);
 }

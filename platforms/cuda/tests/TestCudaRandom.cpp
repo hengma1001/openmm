@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -34,7 +32,6 @@
  */
 
 #include "openmm/internal/AssertionUtilities.h"
-#include "CudaArray.h"
 #include "CudaContext.h"
 #include "CudaIntegrationUtilities.h"
 #include "openmm/System.h"
@@ -55,12 +52,13 @@ void testGaussian() {
     for (int i = 0; i < numAtoms; i++)
         system.addParticle(1.0);
     CudaPlatform::PlatformData platformData(NULL, system, "", "true", platform.getPropertyDefaultValue("CudaPrecision"), "false",
-            platform.getPropertyDefaultValue(CudaPlatform::CudaCompiler()), platform.getPropertyDefaultValue(CudaPlatform::CudaTempDirectory()),
-            platform.getPropertyDefaultValue(CudaPlatform::CudaHostCompiler()), platform.getPropertyDefaultValue(CudaPlatform::CudaDisablePmeStream()), "false", 1, NULL);
+            platform.getPropertyDefaultValue(CudaPlatform::CudaTempDirectory()),
+            platform.getPropertyDefaultValue(CudaPlatform::CudaDisablePmeStream()), "false", 1, NULL);
     CudaContext& context = *platformData.contexts[0];
     context.initialize();
+    context.setAsCurrent();
     context.getIntegrationUtilities().initRandomNumberGenerator(0);
-    CudaArray& random = context.getIntegrationUtilities().getRandom();
+    ArrayInterface& random = context.getIntegrationUtilities().getRandom();
     context.getIntegrationUtilities().prepareRandomNumbers(random.getSize());
     const int numValues = random.getSize()*4;
     vector<float4> values(numValues);

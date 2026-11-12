@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -80,9 +78,7 @@ void RPMDIntegrator::stateChanged(State::DataType changed) {
 }
 
 vector<string> RPMDIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateRPMDStepKernel::Name());
-    return names;
+    return {IntegrateRPMDStepKernel::Name()};
 }
 
 void RPMDIntegrator::setPositions(int copy, const vector<Vec3>& positions) {
@@ -142,7 +138,7 @@ State RPMDIntegrator::getState(int copy, int types, bool enforcePeriodicBox, int
 
         // Construct the new State.
 
-        State::StateBuilder builder(state.getTime());
+        State::StateBuilder builder(state.getTime(), state.getStepCount());
         builder.setPositions(positions);
         builder.setPeriodicBoxVectors(periodicBoxSize[0], periodicBoxSize[1], periodicBoxSize[2]);
         if (types&State::Velocities)
@@ -188,12 +184,12 @@ void RPMDIntegrator::step(int steps) {
         context->getOwner().setPositions(p);
         isFirstStep = false;
     }
-    for (auto impl : context->getForceImpls()) {
-        RPMDUpdater* updater = dynamic_cast<RPMDUpdater*>(impl);
-        if (updater != NULL)
-            updater->updateRPMDState(*context);
-    }
     for (int i = 0; i < steps; ++i) {
+        for (auto impl : context->getForceImpls()) {
+            RPMDUpdater* updater = dynamic_cast<RPMDUpdater*>(impl);
+            if (updater != NULL)
+                updater->updateRPMDState(*context);
+        }
         kernel.getAs<IntegrateRPMDStepKernel>().execute(*context, *this, forcesAreValid);
         forcesAreValid = true;
     }

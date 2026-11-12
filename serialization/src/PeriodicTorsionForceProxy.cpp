@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void PeriodicTorsionForceProxy::serialize(const void* object, SerializationNode&
     node.setIntProperty("version", 2);
     const PeriodicTorsionForce& force = *reinterpret_cast<const PeriodicTorsionForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setBoolProperty("usesPeriodic", force.usesPeriodicBoundaryConditions());
     SerializationNode& torsions = node.createChildNode("Torsions");
     for (int i = 0; i < force.getNumTorsions(); i++) {
@@ -62,6 +61,7 @@ void* PeriodicTorsionForceProxy::deserialize(const SerializationNode& node) cons
     PeriodicTorsionForce* force = new PeriodicTorsionForce();
     try {
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         if (version > 1)
             force->setUsesPeriodicBoundaryConditions(node.getBoolProperty("usesPeriodic"));
         const SerializationNode& torsions = node.getChildNode("Torsions");

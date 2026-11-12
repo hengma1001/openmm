@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -44,6 +42,7 @@ using std::string;
 using std::stringstream;
 
 CustomBondForceImpl::CustomBondForceImpl(const CustomBondForce& owner) : owner(owner) {
+    forceGroup = owner.getForceGroup();
 }
 
 CustomBondForceImpl::~CustomBondForceImpl() {
@@ -58,19 +57,15 @@ void CustomBondForceImpl::initialize(ContextImpl& context) {
     vector<double> parameters;
     int numParameters = owner.getNumPerBondParameters();
     for (int i = 0; i < owner.getNumBonds(); i++) {
-        int particle1, particle2;
-        owner.getBondParameters(i, particle1, particle2, parameters);
-        if (particle1 < 0 || particle1 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomBondForce: Illegal particle index for a bond: ";
-            msg << particle1;
-            throw OpenMMException(msg.str());
-        }
-        if (particle2 < 0 || particle2 >= system.getNumParticles()) {
-            stringstream msg;
-            msg << "CustomBondForce: Illegal particle index for a bond: ";
-            msg << particle2;
-            throw OpenMMException(msg.str());
+        int particle[2];
+        owner.getBondParameters(i, particle[0], particle[1], parameters);
+        for (int j = 0; j < 2; j++) {
+            if (particle[j] < 0 || particle[j] >= system.getNumParticles()) {
+                stringstream msg;
+                msg << "CustomBondForce: Illegal particle index for a bond: ";
+                msg << particle[j];
+                throw OpenMMException(msg.str());
+            }
         }
         if (parameters.size() != numParameters) {
             stringstream msg;
@@ -83,15 +78,13 @@ void CustomBondForceImpl::initialize(ContextImpl& context) {
 }
 
 double CustomBondForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups) {
-    if ((groups&(1<<owner.getForceGroup())) != 0)
+    if ((groups&(1<<forceGroup)) != 0)
         return kernel.getAs<CalcCustomBondForceKernel>().execute(context, includeForces, includeEnergy);
     return 0.0;
 }
 
 vector<string> CustomBondForceImpl::getKernelNames() {
-    vector<string> names;
-    names.push_back(CalcCustomBondForceKernel::Name());
-    return names;
+    return {CalcCustomBondForceKernel::Name()};
 }
 
 map<string, double> CustomBondForceImpl::getDefaultParameters() {
@@ -111,7 +104,7 @@ vector<pair<int, int> > CustomBondForceImpl::getBondedParticles() const {
     return bonds;
 }
 
-void CustomBondForceImpl::updateParametersInContext(ContextImpl& context) {
-    kernel.getAs<CalcCustomBondForceKernel>().copyParametersToContext(context, owner);
+void CustomBondForceImpl::updateParametersInContext(ContextImpl& context, int firstBond, int lastBond) {
+    kernel.getAs<CalcCustomBondForceKernel>().copyParametersToContext(context, owner, firstBond, lastBond);
     context.systemChanged();
 }

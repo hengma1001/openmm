@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                               OpenMMAmoeba                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008 Stanford University and the Authors.           *
  * Authors:                                                                   *
@@ -31,6 +29,7 @@
 
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/AmoebaMultipoleForceImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/amoebaKernels.h"
 #include <stdio.h>
 
@@ -61,7 +60,7 @@ void AmoebaMultipoleForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("AmoebaMultipoleForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("AmoebaMultipoleForce: "+Messages::cutoffTooLarge);
     }
 
     double quadrupoleValidationTolerance = 1.0e-05;
@@ -151,9 +150,7 @@ double AmoebaMultipoleForceImpl::calcForcesAndEnergy(ContextImpl& context, bool 
 }
 
 std::vector<std::string> AmoebaMultipoleForceImpl::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(CalcAmoebaMultipoleForceKernel::Name());
-    return names;
+    return {CalcAmoebaMultipoleForceKernel::Name()};
 }
 
 const int* AmoebaMultipoleForceImpl::getCovalentDegrees() {

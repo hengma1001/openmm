@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -48,7 +46,7 @@ using namespace std;
 
 static OpenCLPlatform platform;
 
-class SortTrait : public OpenCLSort::SortTrait {
+class SortTrait : public ComputeSortImpl::SortTrait {
     int getDataSize() const {return 4;}
     int getKeySize() const {return 4;}
     const char* getDataType() const {return "float";}
@@ -59,17 +57,17 @@ class SortTrait : public OpenCLSort::SortTrait {
     const char* getSortKey() const {return "value";}
 };
 
-void verifySorting(vector<float> array) {
+void verifySorting(vector<float> array, bool uniform) {
     // Sort the array.
 
     System system;
     system.addParticle(0.0);
-    OpenCLPlatform::PlatformData platformData(system, "", "", platform.getPropertyDefaultValue("OpenCLPrecision"), "false", "false", 1, NULL);
+    OpenCLPlatform::PlatformData platformData(system, NULL, "", "", platform.getPropertyDefaultValue("OpenCLPrecision"), "false", "false", 1, NULL);
     OpenCLContext& context = *platformData.contexts[0];
     context.initialize();
     OpenCLArray data(context, array.size(), sizeof(float), "sortData");
     data.upload(array);
-    OpenCLSort sort(context, new SortTrait(), array.size());
+    OpenCLSort sort(context, new SortTrait(), array.size(), uniform);
     sort.sort(data);
     vector<float> sorted;
     data.download(sorted);
@@ -93,7 +91,8 @@ void testUniformValues() {
     vector<float> array(10000);
     for (int i = 0; i < (int) array.size(); i++)
         array[i] = (float) genrand_real2(sfmt);
-    verifySorting(array);
+    verifySorting(array, true);
+    verifySorting(array, false);
 }
 
 void testLogValues() {
@@ -103,7 +102,8 @@ void testLogValues() {
     vector<float> array(10000);
     for (int i = 0; i < (int) array.size(); i++)
         array[i] = (float) log(genrand_real2(sfmt));
-    verifySorting(array);
+    verifySorting(array, true);
+    verifySorting(array, false);
 }
 
 void testShortList() {
@@ -113,7 +113,8 @@ void testShortList() {
     vector<float> array(500);
     for (int i = 0; i < (int) array.size(); i++)
         array[i] = (float) log(genrand_real2(sfmt));
-    verifySorting(array);
+    verifySorting(array, true);
+    verifySorting(array, false);
 }
 
 int main(int argc, char* argv[]) {

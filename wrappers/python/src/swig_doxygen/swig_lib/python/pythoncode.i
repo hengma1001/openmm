@@ -1,10 +1,6 @@
 %pythoncode %{
 
-try:
-    import numpy
-except ImportError:
-    numpy = None
-
+import numpy
 import copy
 import sys
 import math
@@ -17,8 +13,8 @@ if sys.version_info[0] == 2:
 else:
     _string_types = (bytes, str)
 
-import simtk.unit as unit
-from simtk.openmm.vec3 import Vec3
+import openmm.unit as unit
+from openmm.vec3 import Vec3
 
 
 %}

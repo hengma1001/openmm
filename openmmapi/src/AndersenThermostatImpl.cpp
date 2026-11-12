@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2010 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,6 +30,7 @@
 #include "openmm/internal/AndersenThermostatImpl.h"
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/Integrator.h"
+#include "openmm/OpenMMException.h"
 #include "openmm/System.h"
 #include "openmm/kernels.h"
 #include <vector>
@@ -43,6 +42,10 @@ AndersenThermostatImpl::AndersenThermostatImpl(const AndersenThermostat& owner) 
 }
 
 void AndersenThermostatImpl::initialize(ContextImpl& context) {
+    if (owner.getDefaultTemperature() < 0)
+        throw OpenMMException("AndersenThermostat: temperature cannot be negative");
+    if (owner.getDefaultCollisionFrequency() < 0)
+        throw OpenMMException("AndersenThermostat: collision frequency cannot be negative");
     kernel = context.getPlatform().createKernel(ApplyAndersenThermostatKernel::Name(), context);
     kernel.getAs<ApplyAndersenThermostatKernel>().initialize(context.getSystem(), owner);
 }
@@ -52,16 +55,12 @@ void AndersenThermostatImpl::updateContextState(ContextImpl& context, bool& forc
 }
 
 std::map<std::string, double> AndersenThermostatImpl::getDefaultParameters() {
-    std::map<std::string, double> parameters;
-    parameters[AndersenThermostat::Temperature()] = getOwner().getDefaultTemperature();
-    parameters[AndersenThermostat::CollisionFrequency()] = getOwner().getDefaultCollisionFrequency();
-    return parameters;
+    return {{AndersenThermostat::Temperature(), getOwner().getDefaultTemperature()},
+            {AndersenThermostat::CollisionFrequency(), getOwner().getDefaultCollisionFrequency()}};
 }
 
 std::vector<std::string> AndersenThermostatImpl::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(ApplyAndersenThermostatKernel::Name());
-    return names;
+    return {ApplyAndersenThermostatKernel::Name()};
 }
 
 vector<vector<int> > AndersenThermostatImpl::calcParticleGroups(const System& system) {

@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -27,16 +25,19 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.      *
  * -------------------------------------------------------------------------- */
 
-#include "CudaContext.h"
 #include "openmm/System.h"
+#include "CudaArray.h"
 #include "CudaExpressionUtilities.h"
+#include "openmm/common/ComputeSort.h"
+#include "openmm/common/NonbondedUtilities.h"
+#include <cuda.h>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace OpenMM {
     
-class CudaSort;
+class CudaContext;
 
 /**
  * This class provides a generic interface for calculating nonbonded interactions.  It does this in two
@@ -63,9 +64,8 @@ class CudaSort;
  * by ForceImpls during calcForcesAndEnergy().
  */
 
-class OPENMM_EXPORT_CUDA CudaNonbondedUtilities {
+class OPENMM_EXPORT_COMMON CudaNonbondedUtilities : public NonbondedUtilities  {
 public:
-    class ParameterInfo;
     CudaNonbondedUtilities(CudaContext& context);
     ~CudaNonbondedUtilities();
     /**
@@ -78,17 +78,21 @@ public:
      * @param exclusionList    for each atom, specifies the list of other atoms whose interactions should be excluded
      * @param kernel           the code to evaluate the interaction
      * @param forceGroup       the force group in which the interaction should be calculated
+     * @param useNeighborList  specifies whether a neighbor list should be used to optimize this interaction.  This should
+     *                         be viewed as only a suggestion.  Even when it is false, a neighbor list may be used anyway.
      * @param supportsPairList specifies whether this interaction can work with a neighbor list that uses a separate pair list
      */
-    void addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance, const std::vector<std::vector<int> >& exclusionList, const std::string& kernel, int forceGroup, bool supportsPairList=false);
+    void addInteraction(bool usesCutoff, bool usesPeriodic, bool usesExclusions, double cutoffDistance,
+                        const std::vector<std::vector<int> >& exclusionList, const std::string& kernel,
+                        int forceGroup, bool useNeighborList=true, bool supportsPairList=false);
     /**
      * Add a per-atom parameter that the default interaction kernel may depend on.
      */
-    void addParameter(const ParameterInfo& parameter);
+    void addParameter(ComputeParameterInfo parameter);
     /**
      * Add an array (other than a per-atom parameter) that should be passed as an argument to the default interaction kernel.
      */
-    void addArgument(const ParameterInfo& parameter);
+    void addArgument(ComputeParameterInfo parameter);
     /**
      * Register that the interaction kernel will be computing the derivative of the potential energy
      * with respect to a parameter.
@@ -108,6 +112,12 @@ public:
      * Initialize this object in preparation for a simulation.
      */
     void initialize(const System& system);
+    /**
+     * Get the number of force buffers required for nonbonded forces.
+     */
+    int getNumForceBuffers() const {
+        return 0;
+    }
     /**
      * Get the number of energy buffers required for nonbonded forces.
      */
@@ -270,16 +280,22 @@ public:
      * @param includeForces whether this kernel should compute forces
      * @param includeEnergy whether this kernel should compute potential energy
      */
-    CUfunction createInteractionKernel(const std::string& source, std::vector<ParameterInfo>& params, std::vector<ParameterInfo>& arguments, bool useExclusions, bool isSymmetric, int groups, bool includeForces, bool includeEnergy);
+    CUfunction createInteractionKernel(const std::string& source, std::vector<ComputeParameterInfo>& params, std::vector<ComputeParameterInfo>& arguments, bool useExclusions, bool isSymmetric, int groups, bool includeForces, bool includeEnergy);
     /**
      * Create the set of kernels that will be needed for a particular combination of force groups.
      * 
      * @param groups    the set of force groups
      */
     void createKernelsForGroups(int groups);
+    /**
+     * Set the source code for the main kernel.  This defaults to the content of nonbonded.cu.  It only needs to be
+     * changed in very unusual circumstances.
+     */
+    void setKernelSource(const std::string& source);
 private:
     class KernelSet;
     class BlockSortTrait;
+    void initParamArgs();
     CudaContext& context;
     std::map<int, KernelSet> groupKernels;
     CudaArray exclusionTiles;
@@ -296,21 +312,27 @@ private:
     CudaArray sortedBlocks;
     CudaArray sortedBlockCenter;
     CudaArray sortedBlockBoundingBox;
+    CudaArray blockSizeRange;
+    CudaArray largeBlockCenter;
+    CudaArray largeBlockBoundingBox;
     CudaArray oldPositions;
     CudaArray rebuildNeighborList;
-    CudaSort* blockSorter;
+    ComputeSort blockSorter;
     CUevent downloadCountEvent;
-    int* pinnedCountBuffer;
-    std::vector<void*> forceArgs, findBlockBoundsArgs, sortBoxDataArgs, findInteractingBlocksArgs;
+    unsigned int* pinnedCountBuffer;
+    std::vector<void*> forceArgs, findBlockBoundsArgs, computeSortKeysArgs, sortBoxDataArgs, findInteractingBlocksArgs;
     std::vector<std::vector<int> > atomExclusions;
-    std::vector<ParameterInfo> parameters;
-    std::vector<ParameterInfo> arguments;
+    std::vector<ComputeParameterInfo> parameters;
+    std::vector<ComputeParameterInfo> arguments;
     std::vector<std::string> energyParameterDerivatives;
     std::map<int, double> groupCutoff;
     std::map<int, std::string> groupKernelSource;
-    double lastCutoff;
-    bool useCutoff, usePeriodic, anyExclusions, usePadding, forceRebuildNeighborList, canUsePairList;
-    int startTileIndex, numTiles, startBlockIndex, numBlocks, maxTiles, maxSinglePairs, maxExclusions, numForceThreadBlocks, forceThreadBlockSize, numAtoms, groupFlags;
+    double maxCutoff;
+    bool useCutoff, usePeriodic, anyExclusions, usePadding, useNeighborList, forceRebuildNeighborList, canUsePairList, useLargeBlocks, hasInitializedParams;
+    int startTileIndex, startBlockIndex, numBlocks, maxExclusions, numForceThreadBlocks, forceThreadBlockSize, numAtoms, groupFlags, numBlockSizes, paramStartIndex;
+    unsigned int maxTiles, maxSinglePairs, tilesAfterReorder, singlePairsAfterReorder;
+    long long numTiles;
+    std::string kernelSource;
 };
 
 /**
@@ -320,64 +342,13 @@ private:
 class CudaNonbondedUtilities::KernelSet {
 public:
     bool hasForces;
-    double cutoffDistance;
     std::string source;
     CUfunction forceKernel, energyKernel, forceEnergyKernel;
     CUfunction findBlockBoundsKernel;
+    CUfunction computeSortKeysKernel;
     CUfunction sortBoxDataKernel;
     CUfunction findInteractingBlocksKernel;
     CUfunction findInteractionsWithinBlocksKernel;
-};
-
-/**
- * This class stores information about a per-atom parameter that may be used in a nonbonded kernel.
- */
-
-class CudaNonbondedUtilities::ParameterInfo {
-public:
-    /**
-     * Create a ParameterInfo object.
-     *
-     * @param name           the name of the parameter
-     * @param type           the data type of the parameter's components
-     * @param numComponents  the number of components in the parameter
-     * @param size           the size of the parameter in bytes
-     * @param memory         the memory containing the parameter values
-     */
-    ParameterInfo(const std::string& name, const std::string& componentType, int numComponents, int size, CUdeviceptr memory) :
-            name(name), componentType(componentType), numComponents(numComponents), size(size), memory(memory) {
-        if (numComponents == 1)
-            type = componentType;
-        else {
-            std::stringstream s;
-            s << componentType << numComponents;
-            type = s.str();
-        }
-    }
-    const std::string& getName() const {
-        return name;
-    }
-    const std::string& getComponentType() const {
-        return componentType;
-    }
-    const std::string& getType() const {
-        return type;
-    }
-    int getNumComponents() const {
-        return numComponents;
-    }
-    int getSize() const {
-        return size;
-    }
-    CUdeviceptr& getMemory() {
-        return memory;
-    }
-private:
-    std::string name;
-    std::string componentType;
-    std::string type;
-    int size, numComponents;
-    CUdeviceptr memory;
 };
 
 } // namespace OpenMM

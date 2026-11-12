@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -31,19 +29,23 @@
 #include "CudaContext.h"
 #include "CudaArray.h"
 #include "CudaBondedUtilities.h"
-#include "CudaForceInfo.h"
+#include "CudaEvent.h"
+#include "CudaFFT3D.h"
 #include "CudaIntegrationUtilities.h"
 #include "CudaKernels.h"
 #include "CudaKernelSources.h"
 #include "CudaNonbondedUtilities.h"
+#include "CudaProgram.h"
+#include "CudaSort.h"
+#include "openmm/common/ComputeArray.h"
+#include "openmm/common/ContextSelector.h"
 #include "SHA1.h"
-#include "hilbert.h"
-#include "openmm/OpenMMException.h"
 #include "openmm/Platform.h"
 #include "openmm/System.h"
 #include "openmm/VirtualSite.h"
 #include "CudaExpressionUtilities.h"
 #include "openmm/internal/ContextImpl.h"
+#include "openmm/internal/ForceImpl.h"
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -54,6 +56,7 @@
 #include <typeinfo>
 #include <sys/stat.h>
 #include <cudaProfiler.h>
+#include <nvrtc.h>
 #ifndef WIN32
   #include <unistd.h>
 #endif
@@ -66,6 +69,12 @@
         m<<prefix<<": "<<getErrorString(result)<<" ("<<result<<")"<<" at "<<__FILE__<<":"<<__LINE__; \
         throw OpenMMException(m.str());\
     }
+#define CHECK_NVRTC_RESULT(result, prefix) \
+    if (result != NVRTC_SUCCESS) { \
+        stringstream m; \
+        m<<prefix<<": "<<nvrtcGetErrorString(result)<<" ("<<result<<")"<<" at "<<__FILE__<<":"<<__LINE__; \
+        throw OpenMMException(m.str());\
+    }
 
 using namespace OpenMM;
 using namespace std;
@@ -74,80 +83,12 @@ const int CudaContext::ThreadBlockSize = 64;
 const int CudaContext::TileSize = sizeof(tileflags)*8;
 bool CudaContext::hasInitializedCuda = false;
 
-#ifdef WIN32
-#include <Windows.h>
-static int executeInWindows(const string &command) {
-    // COMSPEC is an env variable pointing to full dir of cmd.exe
-    // it always defined on pretty much all Windows OSes
-    string fullcommand = getenv("COMSPEC") + string(" /C ") + command;
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory( &si, sizeof(si) );
-    si.cb = sizeof(si);
-    ZeroMemory( &pi, sizeof(pi) );
-    vector<char> args(std::max(1000, (int) fullcommand.size()+1));
-    strcpy(&args[0], fullcommand.c_str());
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    if (!CreateProcess(NULL, &args[0], NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        return -1;
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode = -1;
-    if(!GetExitCodeProcess(pi.hProcess, &exitCode)) {
-        throw(OpenMMException("Could not get nvcc.exe's exit code\n"));
-    } else {
-        if(exitCode == 0)
-            return 0;
-        else
-            return -1;
-    }
-}
-#endif
-
-CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlockingSync, const string& precision, const string& compiler,
-        const string& tempDir, const std::string& hostCompiler, CudaPlatform::PlatformData& platformData, CudaContext* originalContext) : system(system), currentStream(0),
-        time(0.0), platformData(platformData), stepCount(0), computeForceCount(0), stepsSinceReorder(99999), contextIsValid(false), atomsWereReordered(false), hasAssignedPosqCharges(false),
-        hasCompilerKernel(false), isNvccAvailable(false), pinnedBuffer(NULL), integration(NULL), expression(NULL), bonded(NULL), nonbonded(NULL), thread(NULL) {
-    // Determine what compiler to use.
-    
-    this->compiler = "\""+compiler+"\"";
-    if (platformData.context != NULL) {
-        try {
-            compilerKernel = platformData.context->getPlatform().createKernel(CudaCompilerKernel::Name(), *platformData.context);
-            hasCompilerKernel = true;
-        }
-        catch (...) {
-            // The runtime compiler plugin isn't available.
-        }
-    }
-#ifdef WIN32
-    string testCompilerCommand = this->compiler+" --version > nul 2> nul";
-    int res = executeInWindows(testCompilerCommand.c_str());
-#else
-    string testCompilerCommand = this->compiler+" --version > /dev/null 2> /dev/null";
-    int res = std::system(testCompilerCommand.c_str());
-#endif
-    struct stat info;
-    isNvccAvailable = (res == 0 && stat(tempDir.c_str(), &info) == 0);
+CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlockingSync, const string& precision, const string& tempDir, CudaPlatform::PlatformData& platformData,
+        CudaContext* originalContext) : ComputeContext(system), platformData(platformData), contextIsValid(false),
+        pinnedBuffer(NULL), integration(NULL), expression(NULL), bonded(NULL), nonbonded(NULL), useBlockingSync(useBlockingSync) {
     int cudaDriverVersion;
     cuDriverGetVersion(&cudaDriverVersion);
-    static bool hasShownNvccWarning = false;
-    if (hasCompilerKernel && !isNvccAvailable && !hasShownNvccWarning && cudaDriverVersion < 8000) {
-        hasShownNvccWarning = true;
-        printf("Could not find nvcc.  Using runtime compiler, which may produce slower performance.  ");
-#ifdef WIN32
-        printf("Set CUDA_BIN_PATH to specify where nvcc is located.\n");
-#else
-        printf("Set OPENMM_CUDA_COMPILER to specify where nvcc is located.\n");
-#endif
-    }
-    if (hostCompiler.size() > 0)
-        this->compiler = compiler+" --compiler-bindir "+hostCompiler;
-    if (!hasInitializedCuda) {
-        CHECK_RESULT2(cuInit(0), "Error initializing CUDA");
-        hasInitializedCuda = true;
-    }
+    ensureCudaInitialized();
     if (precision == "single") {
         useDoublePrecision = false;
         useMixedPrecision = false;
@@ -198,8 +139,16 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
             else
                 flags += CU_CTX_SCHED_SPIN;
 
-            if (cuCtxCreate(&context, flags, device) == CUDA_SUCCESS) {
+#if CUDA_VERSION < 13000
+            CUresult result = cuCtxCreate(&context, flags, device);
+#else
+            CUctxCreateParams params = {};
+            CUresult result = cuCtxCreate(&context, &params, flags, device);
+#endif
+            if (result == CUDA_SUCCESS) {
                 this->deviceIndex = trialDeviceIndex;
+                CUcontext popped;
+                cuCtxPopCurrent(&popped);
                 break;
             }
         }
@@ -218,7 +167,8 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     }
 
     int major, minor;
-    CHECK_RESULT(cuDeviceComputeCapability(&major, &minor, device));
+    CHECK_RESULT(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device));
+    CHECK_RESULT(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device));
     int numThreadBlocksPerComputeUnit = (major == 6 ? 4 : 6);
     if (cudaDriverVersion < 7000) {
         // This is a workaround to support GTX 980 with CUDA 6.5.  It reports
@@ -236,28 +186,32 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
             minor = 3;
         }
     }
-    gpuArchitecture = intToString(major)+intToString(minor);
+    gpuArchitecture = 10*major+minor;
     computeCapability = major+0.1*minor;
 
     contextIsValid = true;
+    ContextSelector selector(*this);
     CHECK_RESULT(cuCtxSetCacheConfig(CU_FUNC_CACHE_PREFER_SHARED));
-    if (contextIndex > 0) {
+    if (contextIndex > 0 && originalContext == NULL) {
         int canAccess;
         cuDeviceCanAccessPeer(&canAccess, getDevice(), platformData.contexts[0]->getDevice());
         if (canAccess) {
-            platformData.contexts[0]->setAsCurrent();
-            CHECK_RESULT(cuCtxEnablePeerAccess(getContext(), 0));
-            setAsCurrent();
+            {
+                ContextSelector selector2(*platformData.contexts[0]);
+                CHECK_RESULT(cuCtxEnablePeerAccess(getContext(), 0));
+            }
             CHECK_RESULT(cuCtxEnablePeerAccess(platformData.contexts[0]->getContext(), 0));
         }
     }
+    defaultQueue = shared_ptr<ComputeQueueImpl>(new CudaQueue(0));
+    currentQueue = defaultQueue;
     numAtoms = system.getNumParticles();
     paddedNumAtoms = TileSize*((numAtoms+TileSize-1)/TileSize);
     numAtomBlocks = (paddedNumAtoms+(TileSize-1))/TileSize;
     int multiprocessors;
     CHECK_RESULT(cuDeviceGetAttribute(&multiprocessors, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
     numThreadBlocks = numThreadBlocksPerComputeUnit*multiprocessors;
-    if (computeCapability >= 7.0) {
+    if (cudaDriverVersion >= 9000) {
         compilationDefines["SYNC_WARPS"] = "__syncwarp();";
         compilationDefines["SHFL(var, srcLane)"] = "__shfl_sync(0xffffffff, var, srcLane);";
         compilationDefines["BALLOT(var)"] = "__ballot_sync(0xffffffff, var);";
@@ -268,8 +222,6 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
         compilationDefines["BALLOT(var)"] = "__ballot(var);";
     }
     if (useDoublePrecision) {
-        posq.initialize<double4>(*this, paddedNumAtoms, "posq");
-        velm.initialize<double4>(*this, paddedNumAtoms, "velm");
         compilationDefines["USE_DOUBLE_PRECISION"] = "1";
         compilationDefines["make_real2"] = "make_double2";
         compilationDefines["make_real3"] = "make_double3";
@@ -279,9 +231,6 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
         compilationDefines["make_mixed4"] = "make_double4";
     }
     else if (useMixedPrecision) {
-        posq.initialize<float4>(*this, paddedNumAtoms, "posq");
-        posqCorrection.initialize<float4>(*this, paddedNumAtoms, "posqCorrection");
-        velm.initialize<double4>(*this, paddedNumAtoms, "velm");
         compilationDefines["USE_MIXED_PRECISION"] = "1";
         compilationDefines["make_real2"] = "make_float2";
         compilationDefines["make_real3"] = "make_float3";
@@ -291,8 +240,6 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
         compilationDefines["make_mixed4"] = "make_double4";
     }
     else {
-        posq.initialize<float4>(*this, paddedNumAtoms, "posq");
-        velm.initialize<float4>(*this, paddedNumAtoms, "velm");
         compilationDefines["make_real2"] = "make_float2";
         compilationDefines["make_real3"] = "make_float3";
         compilationDefines["make_real4"] = "make_float4";
@@ -300,24 +247,6 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
         compilationDefines["make_mixed3"] = "make_float3";
         compilationDefines["make_mixed4"] = "make_float4";
     }
-    posCellOffsets.resize(paddedNumAtoms, make_int4(0, 0, 0, 0));
-    atomIndexDevice.initialize<int>(*this, paddedNumAtoms, "atomIndex");
-    atomIndex.resize(paddedNumAtoms);
-    for (int i = 0; i < paddedNumAtoms; ++i)
-        atomIndex[i] = i;
-    atomIndexDevice.upload(atomIndex);
-
-    // Create utility kernels that are used in multiple places.
-
-    CUmodule utilities = createModule(CudaKernelSources::vectorOps+CudaKernelSources::utilities);
-    clearBufferKernel = getKernel(utilities, "clearBuffer");
-    clearTwoBuffersKernel = getKernel(utilities, "clearTwoBuffers");
-    clearThreeBuffersKernel = getKernel(utilities, "clearThreeBuffers");
-    clearFourBuffersKernel = getKernel(utilities, "clearFourBuffers");
-    clearFiveBuffersKernel = getKernel(utilities, "clearFiveBuffers");
-    clearSixBuffersKernel = getKernel(utilities, "clearSixBuffers");
-    reduceEnergyKernel = getKernel(utilities, "reduceEnergy");
-    setChargesKernel = getKernel(utilities, "setCharges");
 
     // Set defines based on the requested precision.
 
@@ -335,6 +264,8 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     compilationDefines["ATAN"] = useDoublePrecision ? "atan" : "atanf";
     compilationDefines["ERF"] = useDoublePrecision ? "erf" : "erff";
     compilationDefines["ERFC"] = useDoublePrecision ? "erfc" : "erfcf";
+    compilationDefines["FMA"] = useDoublePrecision ? "fma" : "fmaf";
+    compilationDefines["FABS"] = useDoublePrecision ? "fabs" : "fabsf";
 
     // Set defines for applying periodic boundary conditions.
 
@@ -343,6 +274,10 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     boxIsTriclinic = (boxVectors[0][1] != 0.0 || boxVectors[0][2] != 0.0 ||
                       boxVectors[1][0] != 0.0 || boxVectors[1][2] != 0.0 ||
                       boxVectors[2][0] != 0.0 || boxVectors[2][1] != 0.0);
+    if (platformData.context != NULL)
+        for (const ForceImpl* force : platformData.context->getForceImpls())
+            if (force->getPeriodicBoxIsFlexible())
+                boxIsTriclinic = true;
     if (boxIsTriclinic) {
         compilationDefines["APPLY_PERIODIC_TO_DELTA(delta)"] =
             "{"
@@ -395,10 +330,7 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
             "pos.y -= floor((pos.y-center.y)*invPeriodicBoxSize.y+0.5f)*periodicBoxSize.y; \\\n"
             "pos.z -= floor((pos.z-center.z)*invPeriodicBoxSize.z+0.5f)*periodicBoxSize.z;}";
     }
-
-    // Create the work thread used for parallelization when running on multiple devices.
-
-    thread = new WorkThread();
+    initializeKernels();
 
     // Create utilities objects.
 
@@ -406,10 +338,11 @@ CudaContext::CudaContext(const System& system, int deviceIndex, bool useBlocking
     nonbonded = new CudaNonbondedUtilities(*this);
     integration = new CudaIntegrationUtilities(*this, system);
     expression = new CudaExpressionUtilities(*this);
+    clearBuffer(posq);
 }
 
 CudaContext::~CudaContext() {
-    setAsCurrent();
+    pushAsCurrent();
     for (auto force : forces)
         delete force;
     for (auto listener : reorderListeners)
@@ -428,35 +361,36 @@ CudaContext::~CudaContext() {
         delete bonded;
     if (nonbonded != NULL)
         delete nonbonded;
-    if (thread != NULL)
-        delete thread;
-    string errorMessage = "Error deleting Context";
-    if (contextIsValid && !isLinkedContext) {
+    if (contextIsValid && !isLinkedContext)
         cuProfilerStop();
-        CHECK_RESULT(cuCtxDestroy(context));
-    }
+    popAsCurrent();
+    string errorMessage = "Error deleting Context";
+    if (contextIsValid && !isLinkedContext)
+        cuCtxDestroy(context);
     contextIsValid = false;
 }
 
 void CudaContext::initialize() {
-    cuCtxSetCurrent(context);
+    ContextSelector selector(*this);
     string errorMessage = "Error initializing Context";
     int numEnergyBuffers = max(numThreadBlocks*ThreadBlockSize, nonbonded->getNumEnergyBuffers());
+    int multiprocessors;
+    CHECK_RESULT2(cuDeviceGetAttribute(&multiprocessors, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device), "Error checking GPU properties");
     if (useDoublePrecision) {
         energyBuffer.initialize<double>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<double>(*this, 1, "energySum");
+        energySum.initialize<double>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*4, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(double), 0));
     }
     else if (useMixedPrecision) {
         energyBuffer.initialize<double>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<double>(*this, 1, "energySum");
+        energySum.initialize<double>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*4, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(double), 0));
     }
     else {
         energyBuffer.initialize<float>(*this, numEnergyBuffers, "energyBuffer");
-        energySum.initialize<float>(*this, 1, "energySum");
+        energySum.initialize<float>(*this, multiprocessors, "energySum");
         int pinnedBufferSize = max(paddedNumAtoms*6, numEnergyBuffers);
         CHECK_RESULT(cuMemHostAlloc(&pinnedBuffer, pinnedBufferSize*sizeof(float), 0));
     }
@@ -469,9 +403,8 @@ void CudaContext::initialize() {
     }
     velm.upload(pinnedBuffer);
     bonded->initialize(system);
-    force.initialize<long long>(*this, paddedNumAtoms*3, "force");
-    addAutoclearBuffer(force.getDevicePointer(), force.getSize()*force.getElementSize());
-    addAutoclearBuffer(energyBuffer.getDevicePointer(), energyBuffer.getSize()*energyBuffer.getElementSize());
+    addAutoclearBuffer(longForceBuffer);
+    addAutoclearBuffer(energyBuffer);
     int numEnergyParamDerivs = energyParamDerivNames.size();
     if (numEnergyParamDerivs > 0) {
         if (useDoublePrecision || useMixedPrecision)
@@ -484,8 +417,12 @@ void CudaContext::initialize() {
     nonbonded->initialize(system);
 }
 
-void CudaContext::addForce(CudaForceInfo* force) {
-    forces.push_back(force);
+void CudaContext::initializeContexts() {
+    getPlatformData().initializeContexts(system);
+}
+
+FFT3D CudaContext::createFFT(int xsize, int ysize, int zsize, bool realToComplex) {
+    return FFT3D(new CudaFFT3D(*this, xsize, ysize, zsize, realToComplex));
 }
 
 void CudaContext::setAsCurrent() {
@@ -493,36 +430,18 @@ void CudaContext::setAsCurrent() {
         cuCtxSetCurrent(context);
 }
 
-string CudaContext::replaceStrings(const string& input, const std::map<std::string, std::string>& replacements) const {
-    static set<char> symbolChars;
-    if (symbolChars.size() == 0) {
-        symbolChars.insert('_');
-        for (char c = 'a'; c <= 'z'; c++)
-            symbolChars.insert(c);
-        for (char c = 'A'; c <= 'Z'; c++)
-            symbolChars.insert(c);
-        for (char c = '0'; c <= '9'; c++)
-            symbolChars.insert(c);
-    }
-    string result = input;
-    for (auto& pair : replacements) {
-        int index = 0;
-        int size = pair.first.size();
-        do {
-            index = result.find(pair.first, index);
-            if (index != result.npos) {
-                if ((index == 0 || symbolChars.find(result[index-1]) == symbolChars.end()) && (index == result.size()-size || symbolChars.find(result[index+size]) == symbolChars.end())) {
-                    // We have found a complete symbol, not part of a longer symbol.
+void CudaContext::pushAsCurrent() {
+    if (contextIsValid)
+        cuCtxPushCurrent(context);
+}
 
-                    result.replace(index, size, pair.second);
-                    index += pair.second.size();
-                }
-                else
-                    index++;
-            }
-        } while (index != result.npos);
+void CudaContext::popAsCurrent() {
+    CUcontext popped;
+    if (contextIsValid) {
+        cuCtxPopCurrent(&popped);
+        if (popped != context)
+            throw OpenMMException("Called popAsCurrent() on a context that is not current");
     }
-    return result;
 }
 
 CUmodule CudaContext::createModule(const string source, const char* optimizationFlags) {
@@ -536,10 +455,13 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
     if (!options.empty())
         src << "// Compilation Options: " << options << endl << endl;
     for (auto& pair : compilationDefines) {
-        src << "#define " << pair.first;
-        if (!pair.second.empty())
-            src << " " << pair.second;
-        src << endl;
+        // Query defines to avoid duplicate variables
+        if (defines.find(pair.first) == defines.end()) {
+            src << "#define " << pair.first;
+            if (!pair.second.empty())
+                src << " " << pair.second;
+            src << endl;
+        }
     }
     if (!compilationDefines.empty())
         src << endl;
@@ -568,6 +490,7 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
         src << "typedef float4 mixed4;\n";
     }
     src << "typedef unsigned int tileflags;\n";
+    src << CudaKernelSources::common << endl;
     for (auto& pair : defines) {
         src << "#define " << pair.first;
         if (!pair.second.empty())
@@ -577,6 +500,22 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
     if (!defines.empty())
         src << endl;
     src << source << endl;
+    
+    // Determine what architecture to compile for.
+
+    int maxCompilerArchitecture;
+#if CUDA_VERSION < 11020
+    // CUDA versions before 11.2 can't query the compiler to see what it supports.
+    
+    maxCompilerArchitecture = 75;
+#else
+    int numArchs;
+    CHECK_NVRTC_RESULT(nvrtcGetNumSupportedArchs(&numArchs), "Error querying supported architectures");
+    vector<int> archs(numArchs);
+    CHECK_NVRTC_RESULT(nvrtcGetSupportedArchs(archs.data()), "Error querying supported architectures");
+    maxCompilerArchitecture = archs.back();
+#endif
+    string compileArchitecture = intToString(min(gpuArchitecture, maxCompilerArchitecture));
 
     // See whether we already have PTX for this kernel cached.
 
@@ -590,36 +529,56 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
     cacheFile.flags(ios::hex);
     for (int i = 0; i < 20; i++)
         cacheFile << setw(2) << setfill('0') << (int) hash[i];
-    cacheFile << '_' << gpuArchitecture << '_' << bits;
+    cacheFile << '_' << compileArchitecture << '_' << bits;
     CUmodule module;
     if (cuModuleLoad(&module, cacheFile.str().c_str()) == CUDA_SUCCESS)
         return module;
 
-    // Select names for the various temporary files.
+    // Select a name for the output file.
 
     stringstream tempFileName;
     tempFileName << "openmmTempKernel" << this; // Include a pointer to this context as part of the filename to avoid collisions.
-#ifdef WIN32
-    tempFileName << "_" << GetCurrentProcessId();
-#else
-    tempFileName << "_" << getpid();
-#endif
-    string inputFile = (tempDir+tempFileName.str()+".cu");
+    tempFileName << "_" << this_thread::get_id();
     string outputFile = (tempDir+tempFileName.str()+".ptx");
-    string logFile = (tempDir+tempFileName.str()+".log");
-    int res = 0;
 
-    // If the runtime compiler plugin is available, use it.
-
-    if (hasCompilerKernel && !isNvccAvailable) {
-        string ptx = compilerKernel.getAs<CudaCompilerKernel>().createModule(src.str(), "-arch=compute_"+gpuArchitecture+" "+options, *this);
+    // Split the command line flags into an array of options.
+    
+    string flags = "-arch=compute_"+compileArchitecture+" "+options;
+    stringstream flagsStream(flags);
+    string flag;
+    vector<string> splitFlags;
+    while (flagsStream >> flag)
+        splitFlags.push_back(flag);
+    int numOptions = splitFlags.size();
+    vector<const char*> optionsVec(numOptions);
+    for (int i = 0; i < numOptions; i++)
+        optionsVec[i] = &splitFlags[i][0];
+    
+    // Compile the program to PTX.
+    
+    nvrtcProgram program;
+    CHECK_NVRTC_RESULT(nvrtcCreateProgram(&program, src.str().c_str(), NULL, 0, NULL, NULL), "Error creating program");
+    try {
+        nvrtcResult result = nvrtcCompileProgram(program, optionsVec.size(), &optionsVec[0]);
+        if (result != NVRTC_SUCCESS) {
+            size_t logSize;
+            nvrtcGetProgramLogSize(program, &logSize);
+            vector<char> log(logSize);
+            nvrtcGetProgramLog(program, &log[0]);
+            throw OpenMMException("Error compiling program: "+string(&log[0]));
+        }
+        size_t ptxSize;
+        nvrtcGetPTXSize(program, &ptxSize);
+        vector<char> ptx(ptxSize);
+        nvrtcGetPTX(program, &ptx[0]);
+        nvrtcDestroyProgram(&program);
 
         // If possible, write the PTX out to a temporary file so we can cache it for later use.
 
         bool wroteCache = false;
         try {
             ofstream out(outputFile.c_str());
-            out << ptx;
+            out << string(&ptx[0]);
             out.close();
             if (!out.fail())
                 wroteCache = true;
@@ -634,57 +593,23 @@ CUmodule CudaContext::createModule(const string source, const map<string, string
             return module;
         }
     }
-    else {
-        // Write out the source to a temporary file.
-
-        ofstream out(inputFile.c_str());
-        out << src.str();
-        out.close();
-#ifdef WIN32
-#ifdef _DEBUG
-        string command = compiler+" --ptx -G -g --machine "+bits+" -arch=sm_"+gpuArchitecture+" -o "+outputFile+" "+options+" "+inputFile+" 2> "+logFile;
-#else
-        string command = compiler+" --ptx -lineinfo --machine "+bits+" -arch=sm_"+gpuArchitecture+" -o "+outputFile+" "+options+" "+inputFile+" 2> "+logFile;
-#endif
-        int res = executeInWindows(command);
-#else
-        string command = compiler+" --ptx --machine "+bits+" -arch=sm_"+gpuArchitecture+" -o \""+outputFile+"\" "+options+" \""+inputFile+"\" 2> \""+logFile+"\"";
-        res = std::system(command.c_str());
-#endif
+    catch (...) {
+        nvrtcDestroyProgram(&program);
+        throw;
     }
     try {
-        if (res != 0) {
-            // Load the error log.
-
-            stringstream error;
-            error << "Error launching CUDA compiler: " << res;
-            ifstream log(logFile.c_str());
-            if (log.is_open()) {
-                string line;
-                while (!log.eof()) {
-                    getline(log, line);
-                    error << '\n' << line;
-                }
-                log.close();
-            }
-            throw OpenMMException(error.str());
-        }
         CUresult result = cuModuleLoad(&module, outputFile.c_str());
         if (result != CUDA_SUCCESS) {
             std::stringstream m;
             m<<"Error loading CUDA module: "<<getErrorString(result)<<" ("<<result<<")";
             throw OpenMMException(m.str());
         }
-        remove(inputFile.c_str());
         if (rename(outputFile.c_str(), cacheFile.str().c_str()) != 0)
             remove(outputFile.c_str());
-        remove(logFile.c_str());
         return module;
     }
     catch (...) {
-        remove(inputFile.c_str());
         remove(outputFile.c_str());
-        remove(logFile.c_str());
         throw;
     }
 }
@@ -700,31 +625,52 @@ CUfunction CudaContext::getKernel(CUmodule& module, const string& name) {
     return function;
 }
 
+vector<ComputeContext*> CudaContext::getAllContexts() {
+    vector<ComputeContext*> result;
+    for (CudaContext* c : platformData.contexts)
+        result.push_back(c);
+    return result;
+}
+
+double& CudaContext::getEnergyWorkspace() {
+    return platformData.contextEnergy[contextIndex];
+}
+
+ComputeQueue CudaContext::createQueue() {
+    return shared_ptr<ComputeQueueImpl>(new CudaQueue());
+}
+
 CUstream CudaContext::getCurrentStream() {
-    return currentStream;
+    return dynamic_cast<CudaQueue*>(currentQueue.get())->getStream();
 }
 
-void CudaContext::setCurrentStream(CUstream stream) {
-    currentStream = stream;
+CudaArray* CudaContext::createArray() {
+    return new CudaArray();
 }
 
-void CudaContext::restoreDefaultStream() {
-    setCurrentStream(0);
+ComputeEvent CudaContext::createEvent() {
+    return shared_ptr<ComputeEventImpl>(new CudaEvent(*this));
 }
 
-string CudaContext::doubleToString(double value) const {
-    stringstream s;
-    s.precision(useDoublePrecision ? 16 : 8);
-    s << scientific << value;
-    if (!useDoublePrecision)
-        s << "f";
-    return s.str();
+ComputeSort CudaContext::createSort(ComputeSortImpl::SortTrait* trait, unsigned int length, bool uniform) {
+    return shared_ptr<ComputeSortImpl>(new CudaSort(*this, trait, length, uniform));
 }
 
-string CudaContext::intToString(int value) const {
-    stringstream s;
-    s << value;
-    return s.str();
+ComputeProgram CudaContext::compileProgram(const std::string source, const std::map<std::string, std::string>& defines) {
+    CUmodule module = createModule(CudaKernelSources::vectorOps+source, defines);
+    return shared_ptr<ComputeProgramImpl>(new CudaProgram(*this, module));
+}
+
+CudaArray& CudaContext::unwrap(ArrayInterface& array) const {
+    CudaArray* cuarray;
+    ComputeArray* wrapper = dynamic_cast<ComputeArray*>(&array);
+    if (wrapper != NULL)
+        cuarray = dynamic_cast<CudaArray*>(&wrapper->getArray());
+    else
+        cuarray = dynamic_cast<CudaArray*>(&array);
+    if (cuarray == NULL)
+        throw OpenMMException("Array argument is not an CudaArray");
+    return *cuarray;
 }
 
 std::string CudaContext::getErrorString(CUresult result) {
@@ -738,7 +684,7 @@ void CudaContext::executeKernel(CUfunction kernel, void** arguments, int threads
     if (blockSize == -1)
         blockSize = ThreadBlockSize;
     int gridSize = std::min((threads+blockSize-1)/blockSize, numThreadBlocks);
-    CUresult result = cuLaunchKernel(kernel, gridSize, 1, 1, blockSize, 1, 1, sharedSize, currentStream, arguments, NULL);
+    CUresult result = cuLaunchKernel(kernel, gridSize, 1, 1, blockSize, 1, 1, sharedSize, getCurrentStream(), arguments, NULL);
     if (result != CUDA_SUCCESS) {
         stringstream str;
         str<<"Error invoking kernel: "<<getErrorString(result)<<" ("<<result<<")";
@@ -746,10 +692,9 @@ void CudaContext::executeKernel(CUfunction kernel, void** arguments, int threads
     }
 }
 
-int CudaContext::computeThreadBlockSize(double memory, bool preferShared) const {
-    int maxShared = 16*1024;
-    if (computeCapability >= 2.0 && preferShared)
-        maxShared = 48*1024;
+int CudaContext::computeThreadBlockSize(double memory) const {
+    int maxShared;
+    CHECK_RESULT2(cuDeviceGetAttribute(&maxShared, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, device), "Error querying device property");
     int max = (int) (maxShared/memory);
     if (max < 64)
         return 32;
@@ -759,707 +704,29 @@ int CudaContext::computeThreadBlockSize(double memory, bool preferShared) const 
     return threads;
 }
 
-void CudaContext::clearBuffer(CudaArray& array) {
-    clearBuffer(array.getDevicePointer(), array.getSize()*array.getElementSize());
-}
-
-void CudaContext::clearBuffer(CUdeviceptr memory, int size) {
-    int words = size/4;
-    void* args[] = {&memory, &words};
-    executeKernel(clearBufferKernel, args, words, 128);
-}
-
-void CudaContext::addAutoclearBuffer(CudaArray& array) {
-    addAutoclearBuffer(array.getDevicePointer(), array.getSize()*array.getElementSize());
-}
-
-void CudaContext::addAutoclearBuffer(CUdeviceptr memory, int size) {
-    autoclearBuffers.push_back(memory);
-    autoclearBufferSizes.push_back(size/4);
-}
-
-void CudaContext::clearAutoclearBuffers() {
-    int base = 0;
-    int total = autoclearBufferSizes.size();
-    while (total-base >= 6) {
-        void* args[] = {&autoclearBuffers[base], &autoclearBufferSizes[base],
-                        &autoclearBuffers[base+1], &autoclearBufferSizes[base+1],
-                        &autoclearBuffers[base+2], &autoclearBufferSizes[base+2],
-                        &autoclearBuffers[base+3], &autoclearBufferSizes[base+3],
-                        &autoclearBuffers[base+4], &autoclearBufferSizes[base+4],
-                        &autoclearBuffers[base+5], &autoclearBufferSizes[base+5]};
-        executeKernel(clearSixBuffersKernel, args, max(max(max(max(max(autoclearBufferSizes[base], autoclearBufferSizes[base+1]), autoclearBufferSizes[base+2]), autoclearBufferSizes[base+3]), autoclearBufferSizes[base+4]), autoclearBufferSizes[base+5]), 128);
-        base += 6;
-    }
-    if (total-base == 5) {
-        void* args[] = {&autoclearBuffers[base], &autoclearBufferSizes[base],
-                        &autoclearBuffers[base+1], &autoclearBufferSizes[base+1],
-                        &autoclearBuffers[base+2], &autoclearBufferSizes[base+2],
-                        &autoclearBuffers[base+3], &autoclearBufferSizes[base+3],
-                        &autoclearBuffers[base+4], &autoclearBufferSizes[base+4]};
-        executeKernel(clearFiveBuffersKernel, args, max(max(max(max(autoclearBufferSizes[base], autoclearBufferSizes[base+1]), autoclearBufferSizes[base+2]), autoclearBufferSizes[base+3]), autoclearBufferSizes[base+4]), 128);
-    }
-    else if (total-base == 4) {
-        void* args[] = {&autoclearBuffers[base], &autoclearBufferSizes[base],
-                        &autoclearBuffers[base+1], &autoclearBufferSizes[base+1],
-                        &autoclearBuffers[base+2], &autoclearBufferSizes[base+2],
-                        &autoclearBuffers[base+3], &autoclearBufferSizes[base+3]};
-        executeKernel(clearFourBuffersKernel, args, max(max(max(autoclearBufferSizes[base], autoclearBufferSizes[base+1]), autoclearBufferSizes[base+2]), autoclearBufferSizes[base+3]), 128);
-    }
-    else if (total-base == 3) {
-        void* args[] = {&autoclearBuffers[base], &autoclearBufferSizes[base],
-                        &autoclearBuffers[base+1], &autoclearBufferSizes[base+1],
-                        &autoclearBuffers[base+2], &autoclearBufferSizes[base+2]};
-        executeKernel(clearThreeBuffersKernel, args, max(max(autoclearBufferSizes[base], autoclearBufferSizes[base+1]), autoclearBufferSizes[base+2]), 128);
-    }
-    else if (total-base == 2) {
-        void* args[] = {&autoclearBuffers[base], &autoclearBufferSizes[base],
-                        &autoclearBuffers[base+1], &autoclearBufferSizes[base+1]};
-        executeKernel(clearTwoBuffersKernel, args, max(autoclearBufferSizes[base], autoclearBufferSizes[base+1]), 128);
-    }
-    else if (total-base == 1) {
-        clearBuffer(autoclearBuffers[base], autoclearBufferSizes[base]*4);
-    }
-}
-
 double CudaContext::reduceEnergy() {
-    int bufferSize = energyBuffer.getSize();
     int workGroupSize  = 512;
-    void* args[] = {&energyBuffer.getDevicePointer(), &energySum.getDevicePointer(), &bufferSize, &workGroupSize};
-    executeKernel(reduceEnergyKernel, args, workGroupSize, workGroupSize, workGroupSize*energyBuffer.getElementSize());
+    reduceEnergyKernel->setArg(0, energyBuffer);
+    reduceEnergyKernel->setArg(1, energySum);
+    reduceEnergyKernel->setArg(2, energyBuffer.getSize());
+    reduceEnergyKernel->setArg(3, workGroupSize);
+    reduceEnergyKernel->execute(workGroupSize*energySum.getSize(), workGroupSize);
     energySum.download(pinnedBuffer);
-    if (getUseDoublePrecision() || getUseMixedPrecision())
-        return *((double*) pinnedBuffer);
-    else
-        return *((float*) pinnedBuffer);
-}
-
-void CudaContext::setCharges(const vector<double>& charges) {
-    if (!chargeBuffer.isInitialized())
-        chargeBuffer.initialize(*this, numAtoms, useDoublePrecision ? sizeof(double) : sizeof(float), "chargeBuffer");
-    vector<double> c(numAtoms);
-    for (int i = 0; i < numAtoms; i++)
-        c[i] = charges[i];
-    chargeBuffer.upload(c, true);
-    void* args[] = {&chargeBuffer.getDevicePointer(), &posq.getDevicePointer(), &atomIndexDevice.getDevicePointer(), &numAtoms};
-    executeKernel(setChargesKernel, args, numAtoms);
-}
-
-bool CudaContext::requestPosqCharges() {
-    bool allow = !hasAssignedPosqCharges;
-    hasAssignedPosqCharges = true;
-    return allow;
-}
-
-/**
- * This class ensures that atom reordering doesn't break virtual sites.
- */
-class CudaContext::VirtualSiteInfo : public CudaForceInfo {
-public:
-    VirtualSiteInfo(const System& system) {
-        for (int i = 0; i < system.getNumParticles(); i++) {
-            if (system.isVirtualSite(i)) {
-                const VirtualSite& vsite = system.getVirtualSite(i);
-                siteTypes.push_back(&typeid(vsite));
-                vector<int> particles;
-                particles.push_back(i);
-                for (int j = 0; j < vsite.getNumParticles(); j++)
-                    particles.push_back(vsite.getParticle(j));
-                siteParticles.push_back(particles);
-                vector<double> weights;
-                if (dynamic_cast<const TwoParticleAverageSite*>(&vsite) != NULL) {
-                    // A two particle average.
-
-                    const TwoParticleAverageSite& site = dynamic_cast<const TwoParticleAverageSite&>(vsite);
-                    weights.push_back(site.getWeight(0));
-                    weights.push_back(site.getWeight(1));
-                }
-                else if (dynamic_cast<const ThreeParticleAverageSite*>(&vsite) != NULL) {
-                    // A three particle average.
-
-                    const ThreeParticleAverageSite& site = dynamic_cast<const ThreeParticleAverageSite&>(vsite);
-                    weights.push_back(site.getWeight(0));
-                    weights.push_back(site.getWeight(1));
-                    weights.push_back(site.getWeight(2));
-                }
-                else if (dynamic_cast<const OutOfPlaneSite*>(&vsite) != NULL) {
-                    // An out of plane site.
-
-                    const OutOfPlaneSite& site = dynamic_cast<const OutOfPlaneSite&>(vsite);
-                    weights.push_back(site.getWeight12());
-                    weights.push_back(site.getWeight13());
-                    weights.push_back(site.getWeightCross());
-                }
-                siteWeights.push_back(weights);
-            }
-        }
-    }
-    int getNumParticleGroups() {
-        return siteTypes.size();
-    }
-    void getParticlesInGroup(int index, std::vector<int>& particles) {
-        particles = siteParticles[index];
-    }
-    bool areGroupsIdentical(int group1, int group2) {
-        if (siteTypes[group1] != siteTypes[group2])
-            return false;
-        int numParticles = siteWeights[group1].size();
-        if (siteWeights[group2].size() != numParticles)
-            return false;
-        for (int i = 0; i < numParticles; i++)
-            if (siteWeights[group1][i] != siteWeights[group2][i])
-                return false;
-        return true;
-    }
-private:
-    vector<const type_info*> siteTypes;
-    vector<vector<int> > siteParticles;
-    vector<vector<double> > siteWeights;
-};
-
-void CudaContext::findMoleculeGroups() {
-    // The first time this is called, we need to identify all the molecules in the system.
-
-    if (moleculeGroups.size() == 0) {
-        // Add a ForceInfo that makes sure reordering doesn't break virtual sites.
-
-        addForce(new VirtualSiteInfo(system));
-
-        // First make a list of every other atom to which each atom is connect by a constraint or force group.
-
-        vector<vector<int> > atomBonds(system.getNumParticles());
-        for (int i = 0; i < system.getNumConstraints(); i++) {
-            int particle1, particle2;
-            double distance;
-            system.getConstraintParameters(i, particle1, particle2, distance);
-            atomBonds[particle1].push_back(particle2);
-            atomBonds[particle2].push_back(particle1);
-        }
-        for (auto force : forces) {
-            for (int j = 0; j < force->getNumParticleGroups(); j++) {
-                vector<int> particles;
-                force->getParticlesInGroup(j, particles);
-                for (int k = 0; k < (int) particles.size(); k++)
-                    for (int m = 0; m < (int) particles.size(); m++)
-                        if (k != m)
-                            atomBonds[particles[k]].push_back(particles[m]);
-            }
-        }
-
-        // Now identify atoms by which molecule they belong to.
-
-        vector<vector<int> > atomIndices = ContextImpl::findMolecules(numAtoms, atomBonds);
-        int numMolecules = atomIndices.size();
-        vector<int> atomMolecule(numAtoms);
-        for (int i = 0; i < (int) atomIndices.size(); i++)
-            for (int j = 0; j < (int) atomIndices[i].size(); j++)
-                atomMolecule[atomIndices[i][j]] = i;
-
-        // Construct a description of each molecule.
-
-        molecules.resize(numMolecules);
-        for (int i = 0; i < numMolecules; i++) {
-            molecules[i].atoms = atomIndices[i];
-            molecules[i].groups.resize(forces.size());
-        }
-        for (int i = 0; i < system.getNumConstraints(); i++) {
-            int particle1, particle2;
-            double distance;
-            system.getConstraintParameters(i, particle1, particle2, distance);
-            molecules[atomMolecule[particle1]].constraints.push_back(i);
-        }
-        for (int i = 0; i < (int) forces.size(); i++)
-            for (int j = 0; j < forces[i]->getNumParticleGroups(); j++) {
-                vector<int> particles;
-                forces[i]->getParticlesInGroup(j, particles);
-                if (particles.size() > 0)
-                    molecules[atomMolecule[particles[0]]].groups[i].push_back(j);
-            }
-    }
-
-    // Sort them into groups of identical molecules.
-
-    vector<Molecule> uniqueMolecules;
-    vector<vector<int> > moleculeInstances;
-    vector<vector<int> > moleculeOffsets;
-    for (int molIndex = 0; molIndex < (int) molecules.size(); molIndex++) {
-        Molecule& mol = molecules[molIndex];
-
-        // See if it is identical to another molecule.
-
-        bool isNew = true;
-        for (int j = 0; j < (int) uniqueMolecules.size() && isNew; j++) {
-            Molecule& mol2 = uniqueMolecules[j];
-            bool identical = (mol.atoms.size() == mol2.atoms.size() && mol.constraints.size() == mol2.constraints.size());
-
-            // See if the atoms are identical.
-
-            int atomOffset = mol2.atoms[0]-mol.atoms[0];
-            for (int i = 0; i < (int) mol.atoms.size() && identical; i++) {
-                if (mol.atoms[i] != mol2.atoms[i]-atomOffset || system.getParticleMass(mol.atoms[i]) != system.getParticleMass(mol2.atoms[i]))
-                    identical = false;
-                for (int k = 0; k < (int) forces.size(); k++)
-                    if (!forces[k]->areParticlesIdentical(mol.atoms[i], mol2.atoms[i]))
-                        identical = false;
-            }
-
-            // See if the constraints are identical.
-
-            for (int i = 0; i < (int) mol.constraints.size() && identical; i++) {
-                int c1particle1, c1particle2, c2particle1, c2particle2;
-                double distance1, distance2;
-                system.getConstraintParameters(mol.constraints[i], c1particle1, c1particle2, distance1);
-                system.getConstraintParameters(mol2.constraints[i], c2particle1, c2particle2, distance2);
-                if (c1particle1 != c2particle1-atomOffset || c1particle2 != c2particle2-atomOffset || distance1 != distance2)
-                    identical = false;
-            }
-
-            // See if the force groups are identical.
-
-            for (int i = 0; i < (int) forces.size() && identical; i++) {
-                if (mol.groups[i].size() != mol2.groups[i].size())
-                    identical = false;
-                for (int k = 0; k < (int) mol.groups[i].size() && identical; k++) {
-                    if (!forces[i]->areGroupsIdentical(mol.groups[i][k], mol2.groups[i][k]))
-                        identical = false;
-                    vector<int> p1, p2;
-                    forces[i]->getParticlesInGroup(mol.groups[i][k], p1);
-                    forces[i]->getParticlesInGroup(mol2.groups[i][k], p2);
-                    for (int m = 0; m < p1.size(); m++)
-                        if (p1[m] != p2[m]-atomOffset)
-                            identical = false;
-                }
-            }
-            if (identical) {
-                moleculeInstances[j].push_back(molIndex);
-                moleculeOffsets[j].push_back(mol.atoms[0]);
-                isNew = false;
-            }
-        }
-        if (isNew) {
-            uniqueMolecules.push_back(mol);
-            moleculeInstances.push_back(vector<int>());
-            moleculeInstances[moleculeInstances.size()-1].push_back(molIndex);
-            moleculeOffsets.push_back(vector<int>());
-            moleculeOffsets[moleculeOffsets.size()-1].push_back(mol.atoms[0]);
-        }
-    }
-    moleculeGroups.resize(moleculeInstances.size());
-    for (int i = 0; i < (int) moleculeInstances.size(); i++)
-    {
-        moleculeGroups[i].instances = moleculeInstances[i];
-        moleculeGroups[i].offsets = moleculeOffsets[i];
-        vector<int>& atoms = uniqueMolecules[i].atoms;
-        moleculeGroups[i].atoms.resize(atoms.size());
-        for (int j = 0; j < (int) atoms.size(); j++)
-            moleculeGroups[i].atoms[j] = atoms[j]-atoms[0];
-    }
-}
-
-void CudaContext::invalidateMolecules() {
-    for (int i = 0; i < forces.size(); i++)
-        if (invalidateMolecules(forces[i]))
-            return;
-}
-
-bool CudaContext::invalidateMolecules(CudaForceInfo* force) {
-    if (numAtoms == 0 || nonbonded == NULL || !nonbonded->getUseCutoff())
-        return false;
-    bool valid = true;
-    int forceIndex = -1;
-    for (int i = 0; i < forces.size(); i++)
-        if (forces[i] == force)
-            forceIndex = i;
-    getPlatformData().threads.execute([&] (ThreadPool& threads, int threadIndex) {
-        for (int group = 0; valid && group < (int) moleculeGroups.size(); group++) {
-            MoleculeGroup& mol = moleculeGroups[group];
-            vector<int>& instances = mol.instances;
-            vector<int>& offsets = mol.offsets;
-            vector<int>& atoms = mol.atoms;
-            int numMolecules = instances.size();
-            Molecule& m1 = molecules[instances[0]];
-            int offset1 = offsets[0];
-            int numThreads = threads.getNumThreads();
-            int start = max(1, threadIndex*numMolecules/numThreads);
-            int end = (threadIndex+1)*numMolecules/numThreads;
-            for (int j = start; j < end; j++) {
-                // See if the atoms are identical.
-
-                Molecule& m2 = molecules[instances[j]];
-                int offset2 = offsets[j];
-                for (int i = 0; i < (int) atoms.size() && valid; i++) {
-                    if (!force->areParticlesIdentical(atoms[i]+offset1, atoms[i]+offset2))
-                        valid = false;
-                }
-
-                // See if the force groups are identical.
-
-                if (valid && forceIndex > -1) {
-                    for (int k = 0; k < (int) m1.groups[forceIndex].size() && valid; k++)
-                        if (!force->areGroupsIdentical(m1.groups[forceIndex][k], m2.groups[forceIndex][k]))
-                            valid = false;
-                }
-            }
-        }
-    });
-    getPlatformData().threads.waitForThreads();
-    if (valid)
-        return false;
-
-    // The list of which molecules are identical is no longer valid.  We need to restore the
-    // atoms to their original order, rebuild the list of identical molecules, and sort them
-    // again.
-
-    vector<int4> newCellOffsets(numAtoms);
-    if (useDoublePrecision) {
-        vector<double4> oldPosq(paddedNumAtoms);
-        vector<double4> newPosq(paddedNumAtoms, make_double4(0, 0, 0, 0));
-        vector<double4> oldVelm(paddedNumAtoms);
-        vector<double4> newVelm(paddedNumAtoms, make_double4(0, 0, 0, 0));
-        posq.download(oldPosq);
-        velm.download(oldVelm);
-        for (int i = 0; i < numAtoms; i++) {
-            int index = atomIndex[i];
-            newPosq[index] = oldPosq[i];
-            newVelm[index] = oldVelm[i];
-            newCellOffsets[index] = posCellOffsets[i];
-        }
-        posq.upload(newPosq);
-        velm.upload(newVelm);
-    }
-    else if (useMixedPrecision) {
-        vector<float4> oldPosq(paddedNumAtoms);
-        vector<float4> newPosq(paddedNumAtoms, make_float4(0, 0, 0, 0));
-        vector<float4> oldPosqCorrection(paddedNumAtoms);
-        vector<float4> newPosqCorrection(paddedNumAtoms, make_float4(0, 0, 0, 0));
-        vector<double4> oldVelm(paddedNumAtoms);
-        vector<double4> newVelm(paddedNumAtoms, make_double4(0, 0, 0, 0));
-        posq.download(oldPosq);
-        velm.download(oldVelm);
-        for (int i = 0; i < numAtoms; i++) {
-            int index = atomIndex[i];
-            newPosq[index] = oldPosq[i];
-            newPosqCorrection[index] = oldPosqCorrection[i];
-            newVelm[index] = oldVelm[i];
-            newCellOffsets[index] = posCellOffsets[i];
-        }
-        posq.upload(newPosq);
-        posqCorrection.upload(newPosqCorrection);
-        velm.upload(newVelm);
+    double result = 0;
+    if (getUseDoublePrecision() || getUseMixedPrecision()) {
+        for (int i = 0; i < energySum.getSize(); i++)
+            result += ((double*) pinnedBuffer)[i];
     }
     else {
-        vector<float4> oldPosq(paddedNumAtoms);
-        vector<float4> newPosq(paddedNumAtoms, make_float4(0, 0, 0, 0));
-        vector<float4> oldVelm(paddedNumAtoms);
-        vector<float4> newVelm(paddedNumAtoms, make_float4(0, 0, 0, 0));
-        posq.download(oldPosq);
-        velm.download(oldVelm);
-        for (int i = 0; i < numAtoms; i++) {
-            int index = atomIndex[i];
-            newPosq[index] = oldPosq[i];
-            newVelm[index] = oldVelm[i];
-            newCellOffsets[index] = posCellOffsets[i];
-        }
-        posq.upload(newPosq);
-        velm.upload(newVelm);
+        for (int i = 0; i < energySum.getSize(); i++)
+            result += ((float*) pinnedBuffer)[i];
     }
-    for (int i = 0; i < numAtoms; i++) {
-        atomIndex[i] = i;
-        posCellOffsets[i] = newCellOffsets[i];
-    }
-    atomIndexDevice.upload(atomIndex);
-    findMoleculeGroups();
-    for (auto listener : reorderListeners)
-        listener->execute();
-    reorderAtoms();
-    return true;
+    return result;
 }
 
-void CudaContext::reorderAtoms() {
-    atomsWereReordered = false;
-    if (numAtoms == 0 || nonbonded == NULL || !nonbonded->getUseCutoff() || stepsSinceReorder < 250) {
-        stepsSinceReorder++;
-        return;
-    }
-    atomsWereReordered = true;
-    stepsSinceReorder = 0;
-    if (useDoublePrecision)
-        reorderAtomsImpl<double, double4, double, double4>();
-    else if (useMixedPrecision)
-        reorderAtomsImpl<float, float4, double, double4>();
-    else
-        reorderAtomsImpl<float, float4, float, float4>();
+void CudaContext::flushQueue() {
+    cuStreamSynchronize(getCurrentStream());
 }
-
-template <class Real, class Real4, class Mixed, class Mixed4>
-void CudaContext::reorderAtomsImpl() {
-    // Find the range of positions and the number of bins along each axis.
-
-    Real4 padding = {0, 0, 0, 0};
-    vector<Real4> oldPosq(paddedNumAtoms, padding);
-    vector<Real4> oldPosqCorrection(paddedNumAtoms, padding);
-    Mixed4 paddingMixed = {0, 0, 0, 0};
-    vector<Mixed4> oldVelm(paddedNumAtoms, paddingMixed);
-    posq.download(oldPosq);
-    velm.download(oldVelm);
-    if (useMixedPrecision)
-        posqCorrection.download(oldPosqCorrection);
-    Real minx = oldPosq[0].x, maxx = oldPosq[0].x;
-    Real miny = oldPosq[0].y, maxy = oldPosq[0].y;
-    Real minz = oldPosq[0].z, maxz = oldPosq[0].z;
-    if (nonbonded->getUsePeriodic()) {
-        minx = miny = minz = 0.0;
-        maxx = periodicBoxSize.x;
-        maxy = periodicBoxSize.y;
-        maxz = periodicBoxSize.z;
-    }
-    else {
-        for (int i = 1; i < numAtoms; i++) {
-            const Real4& pos = oldPosq[i];
-            minx = min(minx, pos.x);
-            maxx = max(maxx, pos.x);
-            miny = min(miny, pos.y);
-            maxy = max(maxy, pos.y);
-            minz = min(minz, pos.z);
-            maxz = max(maxz, pos.z);
-        }
-    }
-
-    // Loop over each group of identical molecules and reorder them.
-
-    vector<int> originalIndex(numAtoms);
-    vector<Real4> newPosq(paddedNumAtoms);
-    vector<Real4> newPosqCorrection(paddedNumAtoms);
-    vector<Mixed4> newVelm(paddedNumAtoms);
-    vector<int4> newCellOffsets(numAtoms);
-    for (auto& mol : moleculeGroups) {
-        // Find the center of each molecule.
-
-        int numMolecules = mol.offsets.size();
-        vector<int>& atoms = mol.atoms;
-        vector<Real4> molPos(numMolecules);
-        Real invNumAtoms = (Real) (1.0/atoms.size());
-        for (int i = 0; i < numMolecules; i++) {
-            molPos[i].x = 0.0f;
-            molPos[i].y = 0.0f;
-            molPos[i].z = 0.0f;
-            for (int j = 0; j < (int)atoms.size(); j++) {
-                int atom = atoms[j]+mol.offsets[i];
-                const Real4& pos = oldPosq[atom];
-                molPos[i].x += pos.x;
-                molPos[i].y += pos.y;
-                molPos[i].z += pos.z;
-            }
-            molPos[i].x *= invNumAtoms;
-            molPos[i].y *= invNumAtoms;
-            molPos[i].z *= invNumAtoms;
-            if (molPos[i].x != molPos[i].x)
-                throw OpenMMException("Particle coordinate is nan");
-        }
-        if (nonbonded->getUsePeriodic()) {
-            // Move each molecule position into the same box.
-
-            for (int i = 0; i < numMolecules; i++) {
-                Real4 center = molPos[i];
-                int zcell = (int) floor(center.z*invPeriodicBoxSize.z);
-                center.x -= zcell*periodicBoxVecZ.x;
-                center.y -= zcell*periodicBoxVecZ.y;
-                center.z -= zcell*periodicBoxVecZ.z;
-                int ycell = (int) floor(center.y*invPeriodicBoxSize.y);
-                center.x -= ycell*periodicBoxVecY.x;
-                center.y -= ycell*periodicBoxVecY.y;
-                int xcell = (int) floor(center.x*invPeriodicBoxSize.x);
-                center.x -= xcell*periodicBoxVecX.x;
-                if (xcell != 0 || ycell != 0 || zcell != 0) {
-                    Real dx = molPos[i].x-center.x;
-                    Real dy = molPos[i].y-center.y;
-                    Real dz = molPos[i].z-center.z;
-                    molPos[i] = center;
-                    for (int j = 0; j < (int) atoms.size(); j++) {
-                        int atom = atoms[j]+mol.offsets[i];
-                        Real4 p = oldPosq[atom];
-                        p.x -= dx;
-                        p.y -= dy;
-                        p.z -= dz;
-                        oldPosq[atom] = p;
-                        posCellOffsets[atom].x -= xcell;
-                        posCellOffsets[atom].y -= ycell;
-                        posCellOffsets[atom].z -= zcell;
-                    }
-                }
-            }
-        }
-
-        // Select a bin for each molecule, then sort them by bin.
-
-        bool useHilbert = (numMolecules > 5000 || atoms.size() > 8); // For small systems, a simple zigzag curve works better than a Hilbert curve.
-        Real binWidth;
-        if (useHilbert)
-            binWidth = (Real) (max(max(maxx-minx, maxy-miny), maxz-minz)/255.0);
-        else
-            binWidth = (Real) (0.2*nonbonded->getMaxCutoffDistance());
-        Real invBinWidth = (Real) (1.0/binWidth);
-        int xbins = 1 + (int) ((maxx-minx)*invBinWidth);
-        int ybins = 1 + (int) ((maxy-miny)*invBinWidth);
-        vector<pair<int, int> > molBins(numMolecules);
-        bitmask_t coords[3];
-        for (int i = 0; i < numMolecules; i++) {
-            int x = (int) ((molPos[i].x-minx)*invBinWidth);
-            int y = (int) ((molPos[i].y-miny)*invBinWidth);
-            int z = (int) ((molPos[i].z-minz)*invBinWidth);
-            int bin;
-            if (useHilbert) {
-                coords[0] = x;
-                coords[1] = y;
-                coords[2] = z;
-                bin = (int) hilbert_c2i(3, 8, coords);
-            }
-            else {
-                int yodd = y&1;
-                int zodd = z&1;
-                bin = z*xbins*ybins;
-                bin += (zodd ? ybins-y : y)*xbins;
-                bin += (yodd ? xbins-x : x);
-            }
-            molBins[i] = pair<int, int>(bin, i);
-        }
-        sort(molBins.begin(), molBins.end());
-
-        // Reorder the atoms.
-
-        for (int i = 0; i < numMolecules; i++) {
-            for (int atom : atoms) {
-                int oldIndex = mol.offsets[molBins[i].second]+atom;
-                int newIndex = mol.offsets[i]+atom;
-                originalIndex[newIndex] = atomIndex[oldIndex];
-                newPosq[newIndex] = oldPosq[oldIndex];
-                if (useMixedPrecision)
-                    newPosqCorrection[newIndex] = oldPosqCorrection[oldIndex];
-                newVelm[newIndex] = oldVelm[oldIndex];
-                newCellOffsets[newIndex] = posCellOffsets[oldIndex];
-            }
-        }
-    }
-
-    // Update the streams.
-
-    for (int i = 0; i < numAtoms; i++) {
-        atomIndex[i] = originalIndex[i];
-        posCellOffsets[i] = newCellOffsets[i];
-    }
-    posq.upload(newPosq);
-    if (useMixedPrecision)
-        posqCorrection.upload(newPosqCorrection);
-    velm.upload(newVelm);
-    atomIndexDevice.upload(atomIndex);
-    for (auto listener : reorderListeners)
-        listener->execute();
-}
-
-void CudaContext::addReorderListener(ReorderListener* listener) {
-    reorderListeners.push_back(listener);
-}
-
-void CudaContext::addPreComputation(ForcePreComputation* computation) {
-    preComputations.push_back(computation);
-}
-
-void CudaContext::addPostComputation(ForcePostComputation* computation) {
-    postComputations.push_back(computation);
-}
-
-void CudaContext::addEnergyParameterDerivative(const string& param) {
-    // See if this parameter has already been registered.
-    
-    for (int i = 0; i < energyParamDerivNames.size(); i++)
-        if (param == energyParamDerivNames[i])
-            return;
-    energyParamDerivNames.push_back(param);
-}
-
-struct CudaContext::WorkThread::ThreadData {
-    ThreadData(std::queue<CudaContext::WorkTask*>& tasks, bool& waiting,  bool& finished,
-            pthread_mutex_t& queueLock, pthread_cond_t& waitForTaskCondition, pthread_cond_t& queueEmptyCondition) :
-        tasks(tasks), waiting(waiting), finished(finished), queueLock(queueLock),
-        waitForTaskCondition(waitForTaskCondition), queueEmptyCondition(queueEmptyCondition) {
-    }
-    std::queue<CudaContext::WorkTask*>& tasks;
-    bool& waiting;
-    bool& finished;
-    pthread_mutex_t& queueLock;
-    pthread_cond_t& waitForTaskCondition;
-    pthread_cond_t& queueEmptyCondition;
-};
-
-static void* threadBody(void* args) {
-    CudaContext::WorkThread::ThreadData& data = *reinterpret_cast<CudaContext::WorkThread::ThreadData*>(args);
-    while (!data.finished || data.tasks.size() > 0) {
-        pthread_mutex_lock(&data.queueLock);
-        while (data.tasks.empty() && !data.finished) {
-            data.waiting = true;
-            pthread_cond_signal(&data.queueEmptyCondition);
-            pthread_cond_wait(&data.waitForTaskCondition, &data.queueLock);
-        }
-        CudaContext::WorkTask* task = NULL;
-        if (!data.tasks.empty()) {
-            data.waiting = false;
-            task = data.tasks.front();
-            data.tasks.pop();
-        }
-        pthread_mutex_unlock(&data.queueLock);
-        if (task != NULL) {
-            task->execute();
-            delete task;
-        }
-    }
-    data.waiting = true;
-    pthread_cond_signal(&data.queueEmptyCondition);
-    delete &data;
-    return 0;
-}
-
-CudaContext::WorkThread::WorkThread() : waiting(true), finished(false) {
-    pthread_mutex_init(&queueLock, NULL);
-    pthread_cond_init(&waitForTaskCondition, NULL);
-    pthread_cond_init(&queueEmptyCondition, NULL);
-    ThreadData* data = new ThreadData(tasks, waiting, finished, queueLock, waitForTaskCondition, queueEmptyCondition);
-    pthread_create(&thread, NULL, threadBody, data);
-}
-
-CudaContext::WorkThread::~WorkThread() {
-    pthread_mutex_lock(&queueLock);
-    finished = true;
-    pthread_cond_broadcast(&waitForTaskCondition);
-    pthread_mutex_unlock(&queueLock);
-    pthread_join(thread, NULL);
-    pthread_mutex_destroy(&queueLock);
-    pthread_cond_destroy(&waitForTaskCondition);
-    pthread_cond_destroy(&queueEmptyCondition);
-}
-
-void CudaContext::WorkThread::addTask(CudaContext::WorkTask* task) {
-    pthread_mutex_lock(&queueLock);
-    tasks.push(task);
-    waiting = false;
-    pthread_cond_signal(&waitForTaskCondition);
-    pthread_mutex_unlock(&queueLock);
-}
-
-bool CudaContext::WorkThread::isWaiting() {
-    return waiting;
-}
-
-bool CudaContext::WorkThread::isFinished() {
-    return finished;
-}
-
-void CudaContext::WorkThread::flush() {
-    pthread_mutex_lock(&queueLock);
-    while (!waiting)
-       pthread_cond_wait(&queueEmptyCondition, &queueLock);
-    pthread_mutex_unlock(&queueLock);
-}
-
 
 vector<int> CudaContext::getDevicePrecedence() {
     int numDevices;
@@ -1471,7 +738,8 @@ vector<int> CudaContext::getDevicePrecedence() {
     for (int i = 0; i < numDevices; i++) {
         CHECK_RESULT(cuDeviceGet(&thisDevice, i));
         int major, minor, clock, multiprocessors, speed;
-        CHECK_RESULT(cuDeviceComputeCapability(&major, &minor, thisDevice));
+        CHECK_RESULT(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, thisDevice));
+        CHECK_RESULT(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, thisDevice));
         if (major == 1 && minor < 2)
             continue;
 
@@ -1496,4 +764,18 @@ vector<int> CudaContext::getDevicePrecedence() {
     }
 
     return precedence;
+}
+
+unsigned int CudaContext::getEventFlags() {
+    unsigned int flags = CU_EVENT_DISABLE_TIMING;
+    if (useBlockingSync)
+        flags += CU_EVENT_BLOCKING_SYNC;
+    return flags;
+}
+
+void CudaContext::ensureCudaInitialized() {
+    if (!hasInitializedCuda) {
+        CHECK_RESULT2(cuInit(0), "Error initializing CUDA");
+        hasInitializedCuda = true;
+    }
 }

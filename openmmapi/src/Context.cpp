@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -33,8 +31,6 @@
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ForceImpl.h"
-#include "SimTKOpenMMRealType.h"
-#include "sfmt/SFMT.h"
 #include <cmath>
 #include <iostream>
 #include <sstream>
@@ -89,15 +85,16 @@ Platform& Context::getPlatform() {
 }
 
 State Context::getState(int types, bool enforcePeriodicBox, int groups) const {
-    State::StateBuilder builder(impl->getTime());
+    State::StateBuilder builder(impl->getTime(), impl->getStepCount());
     Vec3 periodicBoxSize[3];
     impl->getPeriodicBoxVectors(periodicBoxSize[0], periodicBoxSize[1], periodicBoxSize[2]);
     builder.setPeriodicBoxVectors(periodicBoxSize[0], periodicBoxSize[1], periodicBoxSize[2]);
     bool includeForces = types&State::Forces;
     bool includeEnergy = types&State::Energy;
     bool includeParameterDerivs = types&State::ParameterDerivatives;
+    bool needForcesForEnergy = (includeEnergy && getIntegrator().kineticEnergyRequiresForce());
     if (includeForces || includeEnergy || includeParameterDerivs) {
-        double energy = impl->calcForcesAndEnergy(includeForces || includeEnergy || includeParameterDerivs, includeEnergy, groups);
+        double energy = impl->calcForcesAndEnergy(includeForces || needForcesForEnergy || includeParameterDerivs, includeEnergy, groups);
         if (includeEnergy)
             builder.setEnergy(impl->calcKineticEnergy(), energy);
         if (includeForces) {
@@ -119,7 +116,7 @@ State Context::getState(int types, bool enforcePeriodicBox, int groups) const {
     }
     if (types&State::Positions) {
         vector<Vec3> positions;
-        impl->getPositions(positions);
+        impl->getPositions(positions, enforcePeriodicBox);
         if (enforcePeriodicBox) {
             const vector<vector<int> >& molecules = impl->getMolecules();
             for (auto& mol : molecules) {
@@ -148,11 +145,15 @@ State Context::getState(int types, bool enforcePeriodicBox, int groups) const {
         impl->getVelocities(velocities);
         builder.setVelocities(velocities);
     }
+    if (types&State::IntegratorParameters) {
+        getIntegrator().serializeParameters(builder.updateIntegratorParameters());
+    }
     return builder.getState();
 }
 
 void Context::setState(const State& state) {
     setTime(state.getTime());
+    setStepCount(state.getStepCount());
     Vec3 a, b, c;
     state.getPeriodicBoxVectors(a, b, c);
     setPeriodicBoxVectors(a, b, c);
@@ -163,10 +164,24 @@ void Context::setState(const State& state) {
     if ((state.getDataTypes()&State::Parameters) != 0)
         for (auto& param : state.getParameters())
             setParameter(param.first, param.second);
+    if ((state.getDataTypes()&State::IntegratorParameters) != 0)
+        getIntegrator().deserializeParameters(state.getIntegratorParameters());
+}
+
+double Context::getTime() const {
+    return impl->getTime();
 }
 
 void Context::setTime(double time) {
     impl->setTime(time);
+}
+
+long long Context::getStepCount() const {
+    return impl->getStepCount();
+}
+
+void Context::setStepCount(long long count) {
+    impl->setStepCount(count);
 }
 
 void Context::setPositions(const vector<Vec3>& positions) {
@@ -182,34 +197,18 @@ void Context::setVelocities(const vector<Vec3>& velocities) {
 }
 
 void Context::setVelocitiesToTemperature(double temperature, int randomSeed) {
+    const Integrator& integrator = impl->getIntegrator();
     const System& system = impl->getSystem();
-    
-    // Generate the list of Gaussian random numbers.
-    
-    OpenMM_SFMT::SFMT sfmt;
-    init_gen_rand(randomSeed, sfmt);
-    vector<double> randoms;
-    while (randoms.size() < system.getNumParticles()*3) {
-        double x, y, r2;
-        do {
-            x = 2.0*genrand_real2(sfmt)-1.0;
-            y = 2.0*genrand_real2(sfmt)-1.0;
-            r2 = x*x + y*y;
-        } while (r2 >= 1.0 || r2 == 0.0);
-        double multiplier = sqrt((-2.0*log(r2))/r2);
-        randoms.push_back(x*multiplier);
-        randoms.push_back(y*multiplier);
-    }
-    
-    // Assign the velocities.
-    
-    vector<Vec3> velocities(system.getNumParticles(), Vec3());
-    int nextRandom = 0;
-    for (int i = 0; i < system.getNumParticles(); i++) {
-        double mass = system.getParticleMass(i);
-        if (mass != 0) {
-            double velocityScale = sqrt(BOLTZ*temperature/mass);
-            velocities[i] = Vec3(randoms[nextRandom++], randoms[nextRandom++], randoms[nextRandom++])*velocityScale;
+    vector<Vec3> velocities = integrator.getVelocitiesForTemperature(system, temperature, randomSeed);
+    double offset = integrator.getVelocityTimeOffset();
+    if (offset != 0.0) {
+        impl->calcForcesAndEnergy(true, false, -1);
+        vector<Vec3> forces;
+        impl->getForces(forces);
+        for (int i = 0; i < system.getNumParticles(); i++) {
+            double mass = system.getParticleMass(i);
+            if (mass != 0.0)
+                velocities[i] -= (offset/mass)*forces[i];
         }
     }
     setVelocities(velocities);
@@ -251,12 +250,15 @@ void Context::reinitialize(bool preserveState) {
     stringstream checkpoint(ios_base::out | ios_base::in | ios_base::binary);
     if (preserveState)
         createCheckpoint(checkpoint);
+    bool hasSetPositions = impl->hasSetPositions;
     integrator.cleanup();
     delete impl;
     impl = new ContextImpl(*this, system, integrator, &platform, properties);
     impl->initialize();
-    if (preserveState)
+    if (preserveState) {
         loadCheckpoint(checkpoint);
+        impl->hasSetPositions = hasSetPositions;
+    }
 }
 
 void Context::createCheckpoint(ostream& stream) {

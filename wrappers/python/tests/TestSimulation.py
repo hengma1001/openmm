@@ -1,9 +1,11 @@
 import unittest
 import tempfile
 from datetime import datetime, timedelta
-from simtk.openmm import *
-from simtk.openmm.app import *
-from simtk.unit import *
+from io import BytesIO, StringIO
+from openmm import *
+from openmm.app import *
+from openmm.unit import *
+import numpy as np
 
 class TestSimulation(unittest.TestCase):
     """Test the Simulation class"""
@@ -17,7 +19,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         initialState = simulation.context.getState(getPositions=True, getVelocities=True)
@@ -74,7 +76,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         initialState = simulation.context.getState(getPositions=True, getVelocities=True)
@@ -98,6 +100,77 @@ class TestSimulation(unittest.TestCase):
         self.assertEqual(initialState.getPositions(), state.getPositions())
         self.assertEqual(initialState.getVelocities(), state.getVelocities())
 
+    def testSafeSave(self):
+        """Test that the safe saving feature works as expected."""
+        pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+        ff = ForceField('amber99sb.xml', 'tip3p.xml')
+        system = ff.createSystem(pdb.topology)
+        integrator = VerletIntegrator(0.001*picoseconds)
+
+        # Create a Simulation.
+
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
+        simulation.context.setPositions(pdb.positions)
+        simulation.context.setVelocitiesToTemperature(300*kelvin)
+
+        # Get reference checkpoint and state data.
+
+        checkpointBuffer = BytesIO()
+        simulation.saveCheckpoint(checkpointBuffer)
+        checkpointData = checkpointBuffer.getvalue()
+
+        stateBuffer = StringIO()
+        simulation.saveState(stateBuffer)
+        stateData = stateBuffer.getvalue()
+
+        # Try a safe save of a checkpoint.
+
+        with tempfile.TemporaryDirectory() as directory:
+            tempPath = os.path.join(directory, 'testSafeSaveCheckpoint.dat')
+
+            # Make a file that should get overwritten by the safe save, and some that shouldn't.
+
+            with open(tempPath, 'w') as testFile:
+                testFile.write('Test')
+            with open(f'{tempPath}.0.tmp', 'w') as testFile:
+                testFile.write('Test0')
+            with open(f'{tempPath}.1.tmp', 'w') as testFile:
+                testFile.write('Test1')
+
+            # Perform and verify the safe save and that the contents of the test files were not overwritten.
+
+            simulation.saveCheckpoint(tempPath)
+            with open(tempPath, 'rb') as checkpointFile:
+                self.assertSequenceEqual(checkpointData, checkpointFile.read())
+            with open(f'{tempPath}.0.tmp', 'r') as testFile:
+                self.assertSequenceEqual('Test0', testFile.read())
+            with open(f'{tempPath}.1.tmp', 'r') as testFile:
+                self.assertSequenceEqual('Test1', testFile.read())
+
+        # Try a safe save of a state.
+
+        with tempfile.TemporaryDirectory() as directory:
+            tempPath = os.path.join(directory, 'testSafeSaveState.dat')
+
+            # Make a file that should get overwritten by the safe save, and some that shouldn't.
+
+            with open(tempPath, 'w') as testFile:
+                testFile.write('Test')
+            with open(f'{tempPath}.0.tmp', 'w') as testFile:
+                testFile.write('Test0')
+            with open(f'{tempPath}.1.tmp', 'w') as testFile:
+                testFile.write('Test1')
+
+            # Perform and verify the safe save and that the contents of the test files were not overwritten.
+
+            simulation.saveState(tempPath)
+            with open(tempPath, 'r') as stateFile:
+                self.assertSequenceEqual(stateData, stateFile.read())
+            with open(f'{tempPath}.0.tmp', 'r') as testFile:
+                self.assertSequenceEqual('Test0', testFile.read())
+            with open(f'{tempPath}.1.tmp', 'r') as testFile:
+                self.assertSequenceEqual('Test1', testFile.read())
+
     def testStep(self):
         """Test the step() method."""
         pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
@@ -107,16 +180,18 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         self.assertEqual(0, simulation.currentStep)
         self.assertEqual(0*picoseconds, simulation.context.getState().getTime())
+        simulation.currentStep = 5
+        self.assertEqual(5, simulation.currentStep)
 
         # Take some steps and verify the simulation has advanced by the correct amount.
 
         simulation.step(23)
-        self.assertEqual(23, simulation.currentStep)
+        self.assertEqual(28, simulation.currentStep)
         self.assertAlmostEqual(0.023, simulation.context.getState().getTime().value_in_unit(picoseconds))
 
     def testRunForClockTime(self):
@@ -128,7 +203,7 @@ class TestSimulation(unittest.TestCase):
 
         # Create a Simulation.
 
-        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatformByName('Reference'))
+        simulation = Simulation(pdb.topology, system, integrator, Platform.getPlatform('Reference'))
         simulation.context.setPositions(pdb.positions)
         simulation.context.setVelocitiesToTemperature(300*kelvin)
         self.assertEqual(0, simulation.currentStep)
@@ -146,6 +221,12 @@ class TestSimulation(unittest.TestCase):
 
         self.assertTrue(endTime >= startTime+timedelta(seconds=5))
         self.assertTrue(endTime < startTime+timedelta(seconds=10))
+        
+        # Check that the time and step count are consistent.
+        
+        time = simulation.context.getState().getTime().value_in_unit(picoseconds)
+        expectedTime = simulation.currentStep*integrator.getStepSize().value_in_unit(picoseconds)
+        self.assertAlmostEqual(expectedTime, time)
 
         # Load the checkpoint and state and make sure they are both correct.
 
@@ -171,7 +252,7 @@ class TestSimulation(unittest.TestCase):
                 
             def describeNextReport(self, simulation):
                 steps = self.interval - simulation.currentStep%self.interval
-                return (steps, True, False, False, False, self.periodic)
+                return {'steps':steps, 'periodic':self.periodic, 'include':['positions']}
         
             def report(self, simulation, state):
                 state2 = simulation.context.getState(getPositions=True, enforcePeriodicBox=self.periodic)
@@ -189,6 +270,77 @@ class TestSimulation(unittest.TestCase):
         
         simulation.step(500)
 
+    def testMinimizationReporter(self):
+        """Test invoking a reporter during minimization."""
+        pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+        ff = ForceField('amber99sb.xml', 'tip3p.xml')
+        system = ff.createSystem(pdb.topology)
+        integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
+        simulation = Simulation(pdb.topology, system, integrator)
+        simulation.context.setPositions(pdb.positions)
+
+        class Reporter(MinimizationReporter):
+            lastIteration = -1
+            error = False
+
+            def report(self, iteration, x, grad, args):
+                if iteration != self.lastIteration+1:
+                    self.error = True
+                self.lastIteration = iteration
+                if iteration == 10:
+                    return True
+                if iteration > 10:
+                    self.error = True
+                return False
+
+        reporter = Reporter()
+        simulation.minimizeEnergy(reporter=reporter)
+        assert not reporter.error
+
+    def testSelectDevice(self):
+        """Test querying and selecting devices to run on."""
+        pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+        ff = ForceField('amber99sb.xml', 'tip3p.xml')
+        system = ff.createSystem(pdb.topology)
+        for i in range(Platform.getNumPlatforms()):
+            platform = Platform.getPlatform(i)
+            devices = platform.getDevices()
+            if platform.getName() in ['Reference', 'CPU']:
+                assert len(devices) == 1
+            else:
+                for device in devices:
+                    integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
+                    try:
+                        simulation = Simulation(pdb.topology, system, integrator, platform, device)
+                    except:
+                        # This can happen if a device can't be supported.
+                        continue
+                    for key, value in device.items():
+                        assert platform.getPropertyValue(simulation.context, key) == value
+            for j in range(len(devices)):
+                for k in range(j):
+                    assert devices[j] != devices[k]
+
+    def testPositionsAndVelocities(self):
+        """Test setting and querying positions and velocities."""
+        pdb = PDBFile('systems/alanine-dipeptide-explicit.pdb')
+        ff = ForceField('amber99sb.xml', 'tip3p.xml')
+        system = ff.createSystem(pdb.topology, nonbondedMethod=CutoffPeriodic, constraints=HBonds)
+        integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
+        simulation = Simulation(pdb.topology, system, integrator)
+        simulation.setPositions(pdb.positions)
+        velocities = np.random.rand(system.getNumParticles(), 3)
+        simulation.setVelocities(velocities)
+        state = simulation.getState(positions=True, velocities=True)
+        assert np.allclose(pdb.positions.value_in_unit(nanometers), state.getPositions(asNumpy=True).value_in_unit(nanometers))
+        assert np.allclose(velocities, state.getVelocities(asNumpy=True).value_in_unit(nanometers/picosecond))
+        simulation.setVelocitiesToTemperature(300*kelvin)
+        state = simulation.getState(velocities=True)
+        mass = [[system.getParticleMass(i).value_in_unit(amu)] for i in range(system.getNumParticles())]
+        ke = 0.5*np.sum(mass*state.getVelocities(asNumpy=True).value_in_unit(nanometers/picosecond)**2)
+        dof = 3*system.getNumParticles()-system.getNumConstraints()-3
+        expected = (0.5*MOLAR_GAS_CONSTANT_R*300*kelvin*dof).value_in_unit(kilojoules_per_mole)
+        assert np.allclose(expected, ke, rtol=0.1)
 
 if __name__ == '__main__':
     unittest.main()

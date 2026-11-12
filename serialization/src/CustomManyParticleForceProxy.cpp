@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2014 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -45,6 +43,7 @@ void CustomManyParticleForceProxy::serialize(const void* object, SerializationNo
     node.setIntProperty("version", 1);
     const CustomManyParticleForce& force = *reinterpret_cast<const CustomManyParticleForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setIntProperty("particlesPerSet", force.getNumParticlesPerSet());
     node.setStringProperty("energy", force.getEnergyFunction());
     node.setIntProperty("method", (int) force.getNonbondedMethod());
@@ -63,13 +62,13 @@ void CustomManyParticleForceProxy::serialize(const void* object, SerializationNo
         vector<double> params;
         int type;
         force.getParticleParameters(i, params, type);
-        SerializationNode& node = particles.createChildNode("Particle");
-        node.setIntProperty("type", type);
+        SerializationNode& particle = particles.createChildNode("Particle");
+        particle.setIntProperty("type", type);
         for (int j = 0; j < (int) params.size(); j++) {
             stringstream key;
             key << "param";
             key << j+1;
-            node.setDoubleProperty(key.str(), params[j]);
+            particle.setDoubleProperty(key.str(), params[j]);
         }
     }
     SerializationNode& exclusions = node.createChildNode("Exclusions");
@@ -104,6 +103,7 @@ void* CustomManyParticleForceProxy::deserialize(const SerializationNode& node) c
     try {
         CustomManyParticleForce* force = new CustomManyParticleForce(node.getIntProperty("particlesPerSet"), node.getStringProperty("energy"));
         force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         force->setNonbondedMethod((CustomManyParticleForce::NonbondedMethod) node.getIntProperty("method"));
         force->setPermutationMode((CustomManyParticleForce::PermutationMode) node.getIntProperty("permutationMode"));
         force->setCutoffDistance(node.getDoubleProperty("cutoff"));

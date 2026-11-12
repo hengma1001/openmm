@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -27,11 +25,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.      *
  * -------------------------------------------------------------------------- */
 
-#define __CL_ENABLE_EXCEPTIONS
-#define CL_USE_DEPRECATED_OPENCL_1_1_APIS
 #include "openmm/OpenMMException.h"
-#include "windowsExportOpenCL.h"
-#include <cl.hpp>
+#include "openmm/common/windowsExportCommon.h"
+#include "openmm/common/ArrayInterface.h"
+#include "OpenCLIncludes.h"
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -45,7 +42,7 @@ class OpenCLContext;
  * and for copying data to and from the OpenCL Buffer.
  */
 
-class OPENMM_EXPORT_OPENCL OpenCLArray {
+class OPENMM_EXPORT_COMMON OpenCLArray : public ArrayInterface {
 public:
     /**
      * Create an OpenCLArray object.  The object is allocated on the heap with the "new" operator.
@@ -57,7 +54,7 @@ public:
      * @param flags             the set of flags to specify when creating the OpenCL Buffer
      */
     template <class T>
-    static OpenCLArray* create(OpenCLContext& context, int size, const std::string& name, cl_int flags = CL_MEM_READ_WRITE) {
+    static OpenCLArray* create(OpenCLContext& context, size_t size, const std::string& name, cl_int flags = CL_MEM_READ_WRITE) {
         return new OpenCLArray(context, size, sizeof(T), name, flags);
     }
     /**
@@ -70,7 +67,7 @@ public:
      * @param name              the name of the array
      */
     template <class T>
-    static OpenCLArray* create(OpenCLContext& context, cl::Buffer* buffer, int size, const std::string& name) {
+    static OpenCLArray* create(OpenCLContext& context, cl::Buffer* buffer, size_t size, const std::string& name) {
         return new OpenCLArray(context, buffer, size, sizeof(T), name);
     }
     /**
@@ -87,7 +84,7 @@ public:
      * @param name              the name of the array
      * @param flags             the set of flags to specify when creating the OpenCL Buffer
      */
-    OpenCLArray(OpenCLContext& context, int size, int elementSize, const std::string& name, cl_int flags = CL_MEM_READ_WRITE);
+    OpenCLArray(OpenCLContext& context, size_t size, int elementSize, const std::string& name, cl_int flags = CL_MEM_READ_WRITE);
     /**
      * Create an OpenCLArray object that uses a preexisting Buffer.
      *
@@ -97,8 +94,18 @@ public:
      * @param elementSize       the size of each element in bytes
      * @param name              the name of the array
      */
-    OpenCLArray(OpenCLContext& context, cl::Buffer* buffer, int size, int elementSize, const std::string& name);
+    OpenCLArray(OpenCLContext& context, cl::Buffer* buffer, size_t size, int elementSize, const std::string& name);
     ~OpenCLArray();
+    /**
+     * Initialize this array.
+     *
+     * @param context           the context for which to create the array
+     * @param size              the number of elements in the array
+     * @param elementSize       the size of each element in bytes
+     * @param name              the name of the array
+     * @param type              the type of values the array contains
+     */
+    void initialize(ComputeContext& context, size_t size, int elementSize, const std::string& name, const std::type_info* type=nullptr);
     /**
      * Initialize this object.
      *
@@ -108,7 +115,7 @@ public:
      * @param name              the name of the array
      * @param flags             the set of flags to specify when creating the OpenCL Buffer
      */
-    void initialize(OpenCLContext& context, int size, int elementSize, const std::string& name, cl_int flags = CL_MEM_READ_WRITE);
+    void initialize(OpenCLContext& context, size_t size, int elementSize, const std::string& name, cl_int flags);
     /**
      * Initialize this object to use a preexisting Buffer.
      *
@@ -118,7 +125,7 @@ public:
      * @param elementSize       the size of each element in bytes
      * @param name              the name of the array
      */
-    void initialize(OpenCLContext& context, cl::Buffer* buffer, int size, int elementSize, const std::string& name);
+    void initialize(OpenCLContext& context, cl::Buffer* buffer, size_t size, int elementSize, const std::string& name);
     /**
      * Initialize this object.  The template argument is the data type of each array element.
      *
@@ -128,7 +135,7 @@ public:
      * @param flags             the set of flags to specify when creating the OpenCL Buffer
      */
     template <class T>
-    void initialize(OpenCLContext& context, int size, const std::string& name, cl_int flags = CL_MEM_READ_WRITE) {
+    void initialize(OpenCLContext& context, size_t size, const std::string& name, cl_int flags = CL_MEM_READ_WRITE) {
         initialize(context, size, sizeof(T), name, flags);
     }
     /**
@@ -141,13 +148,13 @@ public:
      * @param name              the name of the array
      */
     template <class T>
-    void initialize(OpenCLContext& context, cl::Buffer* buffer, int size, const std::string& name) {
+    void initialize(OpenCLContext& context, cl::Buffer* buffer, size_t size, const std::string& name) {
         initialize(context, buffer, size, sizeof(T), name);
     }
     /**
      * Recreate the internal storage to have a different size.
      */
-    void resize(int size);
+    void resize(size_t size);
     /**
      * Get whether this array has been initialized.
      */
@@ -157,7 +164,7 @@ public:
     /**
      * Get the size of the array.
      */
-    int getSize() const {
+    size_t getSize() const {
         return size;
     }
     /**
@@ -173,6 +180,14 @@ public:
         return name;
     }
     /**
+     * Get the context this array belongs to.
+     */
+    ComputeContext& getContext();
+    /**
+     * Get the queue in which to perform transfers.
+     */
+    cl::CommandQueue getQueue() const;
+    /**
      * Get the OpenCL Buffer object.
      */
     cl::Buffer& getDeviceBuffer() {
@@ -182,66 +197,52 @@ public:
      * Copy the values in a vector to the Buffer.
      */
     template <class T>
-    void upload(const std::vector<T>& data, bool blocking = true, bool convert = false) {
-        if (convert && data.size() == size && sizeof(T) != elementSize) {
-            if (sizeof(T) == 2*elementSize) {
-                // Convert values from double to single precision.
-                const double* d = reinterpret_cast<const double*>(&data[0]);
-                std::vector<float> v(elementSize*size/sizeof(float));
-                for (int i = 0; i < v.size(); i++)
-                    v[i] = (float) d[i];
-                upload(&v[0], blocking);
-                return;
-            }
-            if (2*sizeof(T) == elementSize) {
-                // Convert values from single to double precision.
-                const float* d = reinterpret_cast<const float*>(&data[0]);
-                std::vector<double> v(elementSize*size/sizeof(double));
-                for (int i = 0; i < v.size(); i++)
-                    v[i] = (double) d[i];
-                upload(&v[0], blocking);
-                return;
-            }
-        }
-        if (sizeof(T) != elementSize || data.size() != size)
-            throw OpenMMException("Error uploading array "+name+": The specified vector does not match the size of the array");
-        upload(&data[0], blocking);
+    void upload(const std::vector<T>& data, bool convert=false) {
+        ArrayInterface::upload(data, convert);
     }
     /**
      * Copy the values in the Buffer to a vector.
      */
     template <class T>
-    void download(std::vector<T>& data, bool blocking = true) const {
-        if (sizeof(T) != elementSize)
-            throw OpenMMException("Error downloading array "+name+": The specified vector has the wrong element size");
-        if (data.size() != size)
-            data.resize(size);
-        download(&data[0], blocking);
+    void download(std::vector<T>& data) const {
+        ArrayInterface::download(data);
     }
     /**
-     * Copy the values in an array to the Buffer.
+     * Copy the values from host memory to the array.
      * 
      * @param data     the data to copy
      * @param blocking if true, this call will block until the transfer is complete.
      */
-    void upload(const void* data, bool blocking = true);
+    void upload(const void* data, bool blocking=true) {
+        uploadSubArray(data, 0, getSize(), blocking);
+    }
+    /**
+     * Copy values from host memory to a subset of the array.
+     * 
+     * @param data     the data to copy
+     * @param offset   the index of the element within the array at which the copy should begin
+     * @param elements the number of elements to copy
+     * @param blocking if true, this call will block until the transfer is complete.
+     */
+    void uploadSubArray(const void* data, int offset, int elements, bool blocking=true);
     /**
      * Copy the values in the Buffer to an array.
      * 
      * @param data     the array to copy the memory to
      * @param blocking if true, this call will block until the transfer is complete.
      */
-    void download(void* data, bool blocking = true) const;
+    void download(void* data, bool blocking=true) const;
     /**
      * Copy the values in the Buffer to a second OpenCLArray.
      * 
      * @param dest     the destination array to copy to
      */
-    void copyTo(OpenCLArray& dest) const;
+    void copyTo(ArrayInterface& dest) const;
 private:
     OpenCLContext* context;
     cl::Buffer* buffer;
-    int size, elementSize;
+    size_t size;
+    int elementSize;
     cl_int flags;
     bool ownsBuffer;
     std::string name;

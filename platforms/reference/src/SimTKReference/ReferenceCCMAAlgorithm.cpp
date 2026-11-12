@@ -1,5 +1,5 @@
 
-/* Portions copyright (c) 2006-2017 Stanford University and Simbios.
+/* Portions copyright (c) 2006-2019 Stanford University and Simbios.
  * Contributors: Peter Eastman, Pande Group
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -33,6 +33,7 @@
 #include "openmm/Vec3.h"
 #include "openmm/internal/ThreadPool.h"
 #include <map>
+#include <set>
 #include <utility>
 
 using namespace OpenMM;
@@ -56,10 +57,10 @@ ReferenceCCMAAlgorithm::ReferenceCCMAAlgorithm(int numberOfAtoms,
     // work arrays
 
     if (_numberOfConstraints > 0) {
-        _r_ij.resize(numberOfConstraints);
-        _d_ij2 = SimTKOpenMMUtilities::allocateOneDRealOpenMMArray(numberOfConstraints, NULL, 1, 0.0, "dij_2");
-        _distanceTolerance = SimTKOpenMMUtilities::allocateOneDRealOpenMMArray(numberOfConstraints, NULL, 1, 0.0, "distanceTolerance");
-        _reducedMasses = SimTKOpenMMUtilities::allocateOneDRealOpenMMArray(numberOfConstraints, NULL, 1, 0.0, "reducedMasses");
+        r_ij.resize(numberOfConstraints);
+        d_ij2.resize(numberOfConstraints);
+        _distanceTolerance.resize(numberOfConstraints);
+        reducedMasses.resize(numberOfConstraints);
     }
     if (numberOfConstraints > 0)
     {
@@ -69,19 +70,26 @@ ReferenceCCMAAlgorithm::ReferenceCCMAAlgorithm(int numberOfAtoms,
         for (int i = 0; i < (int) angles.size(); i++)
             atomAngles[angles[i].atom2].push_back(i);
         vector<vector<pair<int, double> > > matrix(numberOfConstraints);
+        vector<set<int> > atomConstraints(numberOfAtoms);
         for (int j = 0; j < numberOfConstraints; j++) {
-            for (int k = 0; k < numberOfConstraints; k++) {
+            atomConstraints[_atomIndices[j].first].insert(j);
+            atomConstraints[_atomIndices[j].second].insert(j);
+        }
+        for (int j = 0; j < numberOfConstraints; j++) {
+            int atomj0 = _atomIndices[j].first;
+            int atomj1 = _atomIndices[j].second;
+            double invMass0 = 1/masses[atomj0];
+            double invMass1 = 1/masses[atomj1];
+            set<int> constraints = atomConstraints[atomj0];
+            constraints.insert(atomConstraints[atomj1].begin(), atomConstraints[atomj1].end());
+            for (int k : constraints) {
                 if (j == k) {
                     matrix[j].push_back(pair<int, double>(j, 1.0));
                     continue;
                 }
                 double scale;
-                int atomj0 = _atomIndices[j].first;
-                int atomj1 = _atomIndices[j].second;
                 int atomk0 = _atomIndices[k].first;
                 int atomk1 = _atomIndices[k].second;
-                double invMass0 = 1/masses[atomj0];
-                double invMass1 = 1/masses[atomj1];
                 int atoma, atomb, atomc;
                 if (atomj0 == atomk0) {
                     atoma = atomj1;
@@ -113,8 +121,8 @@ ReferenceCCMAAlgorithm::ReferenceCCMAAlgorithm(int numberOfAtoms,
                 // Look for a third constraint forming a triangle with these two.
 
                 bool foundConstraint = false;
-                for (int other = 0; other < numberOfConstraints; other++) {
-                    if ((_atomIndices[other].first == atoma && _atomIndices[other].second == atomc) || (_atomIndices[other].first == atomc && _atomIndices[other].second == atoma)) {
+                for (int other : atomConstraints[atoma]) {
+                    if (_atomIndices[other].first == atomc || _atomIndices[other].second == atomc) {
                         double d1 = _distance[j];
                         double d2 = _distance[k];
                         double d3 = _distance[other];
@@ -193,14 +201,6 @@ ReferenceCCMAAlgorithm::ReferenceCCMAAlgorithm(int numberOfAtoms,
     }
 }
 
-ReferenceCCMAAlgorithm::~ReferenceCCMAAlgorithm() {
-    if (_numberOfConstraints > 0) {
-        SimTKOpenMMUtilities::freeOneDRealOpenMMArray(_d_ij2, "d_ij2");
-        SimTKOpenMMUtilities::freeOneDRealOpenMMArray(_distanceTolerance, "distanceTolerance");
-        SimTKOpenMMUtilities::freeOneDRealOpenMMArray(_reducedMasses, "reducedMasses");
-    }
-}
-
 int ReferenceCCMAAlgorithm::getNumberOfConstraints() const {
     return _numberOfConstraints;
 }
@@ -227,12 +227,6 @@ void ReferenceCCMAAlgorithm::applyToVelocities(std::vector<OpenMM::Vec3>& atomCo
 void ReferenceCCMAAlgorithm::applyConstraints(vector<Vec3>& atomCoordinates,
                                          vector<Vec3>& atomCoordinatesP,
                                          vector<double>& inverseMasses, bool constrainingVelocities, double tolerance) {
-    // temp arrays
-
-    vector<Vec3>& r_ij = _r_ij;
-    double* d_ij2 = _d_ij2;
-    double* reducedMasses = _reducedMasses;
-
     // calculate reduced masses on 1st pass
 
     if (!_hasInitializedMasses) {

@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2022 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -29,13 +27,26 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.                                     *
  * -------------------------------------------------------------------------- */
 
-#include <vector>
-
 #include "openmm/internal/SplineFitter.h"
+#include "openmm/internal/ThreadPool.h"
 #include "openmm/OpenMMException.h"
+#include <atomic>
+#include <vector>
+#include <cmath>
 
 using namespace OpenMM;
 using namespace std;
+
+static bool notEqual(double a, double b) {
+  return (fabs(a-b) > 1e-15 + 1e-15*fabs(b));
+}
+
+void SplineFitter::createSpline(const vector<double>& x, const vector<double>& y, bool periodic, vector<double>& deriv) {
+    if (periodic)
+        SplineFitter::createPeriodicSpline(x, y, deriv);
+    else
+        SplineFitter::createNaturalSpline(x, y, deriv);
+}
 
 void SplineFitter::createNaturalSpline(const vector<double>& x, const vector<double>& y, vector<double>& deriv) {
     int n = x.size();
@@ -80,14 +91,14 @@ void SplineFitter::createPeriodicSpline(const vector<double>& x, const vector<do
         throw OpenMMException("createPeriodicSpline: x and y vectors must have same length");
     if (n < 3)
         throw OpenMMException("createPeriodicSpline: the length of the input array must be at least 3");
-    if (y[0] != y[n-1])
+    if (notEqual(y[0], y[n-1]))
         throw OpenMMException("createPeriodicSpline: the first and last points must have the same value");
     deriv.resize(n);
 
     // Create the system of equations to solve.
 
-    vector<double> a(n), b(n), c(n), rhs(n);
-    a[0] = 0.0;
+    vector<double> a(n-1), b(n-1), c(n-1), rhs(n-1);
+    a[0] = x[n-1]-x[n-2];
     b[0] = 2.0*(x[1]-x[0]+x[n-1]-x[n-2]);
     c[0] = x[1]-x[0];
     rhs[0] = 6.0*((y[1]-y[0])/(x[1]-x[0]) - (y[n-1]-y[n-2])/(x[n-1]-x[n-2]));
@@ -97,17 +108,14 @@ void SplineFitter::createPeriodicSpline(const vector<double>& x, const vector<do
         c[i] = x[i+1]-x[i];
         rhs[i] = 6.0*((y[i+1]-y[i])/(x[i+1]-x[i]) - (y[i]-y[i-1])/(x[i]-x[i-1]));
     }
-    a[n-1] = 0.0;
-    b[n-1] = 1.0;
-    c[n-1] = 0.0;
-    rhs[n-1] = 0.0;
-    double beta = x[n-1]-x[n-2];
-    double alpha = -1.0;
+    double beta = a[0];
+    double alpha = c[n-2];
     double gamma = -b[0];
 
     // This is a cyclic tridiagonal matrix.  We solve it using the Sherman-Morrison method,
     // which involves solving two tridiagonal systems.
 
+    n--;
     b[0] -= gamma;
     b[n-1] -= alpha*beta/gamma;
     solveTridiagonalMatrix(a, b, c, rhs, deriv);
@@ -118,6 +126,7 @@ void SplineFitter::createPeriodicSpline(const vector<double>& x, const vector<do
     double scale = (deriv[0]+beta*deriv[n-1]/gamma)/(1.0+z[0]+beta*z[n-1]/gamma);
     for (int i = 0; i < n; i++)
         deriv[i] -= scale*z[i];
+    deriv[n] = deriv[0];
 }
 
 double SplineFitter::evaluateSpline(const vector<double>& x, const vector<double>& y, const vector<double>& deriv, double t) {
@@ -185,15 +194,19 @@ void SplineFitter::solveTridiagonalMatrix(const vector<double>& a, const vector<
         sol[i] = (rhs[i]-a[i]*sol[i-1])/beta;
     }
 
-    // Perform backsubstitation.
+    // Perform backsubstitution.
 
     for (int i = n-2; i >= 0; i--)
         sol[i] -= gamma[i+1]*sol[i+1];
 }
 
-void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<double>& y, const vector<double>& values, vector<vector<double> >& c) {
+void SplineFitter::create2DSpline(const vector<double>& x, const vector<double>& y, const vector<double>& values, bool periodic, vector<vector<double> >& c) {
     int xsize = x.size(), ysize = y.size();
-    if (xsize < 2 || ysize < 2)
+    if (periodic) {
+        if (xsize < 3 || ysize < 3)
+            throw OpenMMException("create2DNaturalSpline: periodic spline must have at least three points along each axis");
+    }
+    else if (xsize < 2 || ysize < 2)
         throw OpenMMException("create2DNaturalSpline: must have at least two points along each axis");
     if (values.size() != xsize*ysize)
         throw OpenMMException("create2DNaturalSpline: incorrect number of values");
@@ -205,7 +218,7 @@ void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<d
     for (int i = 0; i < ysize; i++) {
         for (int j = 0; j < xsize; j++)
             t[j] = values[j+xsize*i];
-        SplineFitter::createNaturalSpline(x, t, deriv);
+        SplineFitter::createSpline(x, t, periodic, deriv);
         for (int j = 0; j < xsize; j++)
             d1[j+xsize*i] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[j]);
     }
@@ -217,7 +230,7 @@ void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<d
     for (int i = 0; i < xsize; i++) {
         for (int j = 0; j < ysize; j++)
             t[j] = values[i+xsize*j];
-        SplineFitter::createNaturalSpline(y, t, deriv);
+        SplineFitter::createSpline(y, t, periodic, deriv);
         for (int j = 0; j < ysize; j++)
             d2[i+xsize*j] = SplineFitter::evaluateSplineDerivative(y, t, deriv, y[j]);
     }
@@ -229,7 +242,7 @@ void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<d
     for (int i = 0; i < ysize; i++) {
         for (int j = 0; j < xsize; j++)
             t[j] = d2[j+xsize*i];
-        SplineFitter::createNaturalSpline(x, t, deriv);
+        SplineFitter::createSpline(x, t, periodic, deriv);
         for (int j = 0; j < xsize; j++)
             d12[j+xsize*i] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[j]);
     }
@@ -285,6 +298,10 @@ void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<d
             }
         }
     }
+}
+
+void SplineFitter::create2DNaturalSpline(const vector<double>& x, const vector<double>& y, const vector<double>& values, vector<vector<double> >& c) {
+    SplineFitter::create2DSpline(x, y, values, false, c);
 }
 
 double SplineFitter::evaluate2DSpline(const vector<double>& x, const vector<double>& y, const vector<double>& values, const vector<vector<double> >& c, double u, double v) {
@@ -371,112 +388,126 @@ void SplineFitter::evaluate2DSplineDerivatives(const vector<double>& x, const ve
     dy /= deltay;
 }
 
-void SplineFitter::create3DNaturalSpline(const vector<double>& x, const vector<double>& y, const vector<double>& z, const vector<double>& values, vector<vector<double> >& c) {
-    int xsize = x.size(), ysize = y.size(), zsize = z.size();
-    int xysize = xsize*ysize;
-    if (xsize < 2 || ysize < 2 || zsize < 2)
-        throw OpenMMException("create2DNaturalSpline: must have at least two points along each axis");
+void SplineFitter::create3DSpline(const vector<double>& x, const vector<double>& y, const vector<double>& z, const vector<double>& values, bool periodic, vector<vector<double> >& c) {
+    const int xsize = x.size(), ysize = y.size(), zsize = z.size();
+    const int xysize = xsize*ysize;
+    if (periodic) {
+        if (xsize < 3 || ysize < 3 || zsize < 3)
+            throw OpenMMException("create3DNaturalSpline: periodic spline must have at least three points along each axis");
+    }
+    else if (xsize < 2 || ysize < 2 || zsize < 2)
+        throw OpenMMException("create3DNaturalSpline: must have at least two points along each axis");
     if (values.size() != xsize*ysize*zsize)
         throw OpenMMException("create2DNaturalSpline: incorrect number of values");
     vector<double> d1(xsize*ysize*zsize), d2(xsize*ysize*zsize), d3(xsize*ysize*zsize);
     vector<double> d12(xsize*ysize*zsize), d13(xsize*ysize*zsize), d23(xsize*ysize*zsize), d123(xsize*ysize*zsize);
-    vector<double> t(xsize), deriv(xsize);
+    ThreadPool threads;
 
-    // Compute derivatives with respect to x.
+    threads.execute([&] (ThreadPool& threads, int threadIndex) {
+        // Compute derivatives with respect to x.
 
-    for (int i = 0; i < ysize; i++) {
-        for (int j = 0; j < zsize; j++) {
-            for (int k = 0; k < xsize; k++)
-                t[k] = values[k+xsize*i+xysize*j];
-            SplineFitter::createNaturalSpline(x, t, deriv);
-            for (int k = 0; k < xsize; k++)
-                d1[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+        vector<double> t(xsize), deriv(xsize);
+        for (int i = threadIndex; i < ysize; i += threads.getNumThreads()) {
+            for (int j = 0; j < zsize; j++) {
+                for (int k = 0; k < xsize; k++)
+                    t[k] = values[k+xsize*i+xysize*j];
+                SplineFitter::createSpline(x, t, periodic, deriv);
+                for (int k = 0; k < xsize; k++)
+                    d1[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+            }
         }
-    }
 
-    // Compute derivatives with respect to y.
+        // Compute derivatives with respect to y.
 
-    t.resize(ysize);
-    deriv.resize(ysize);
-    for (int i = 0; i < xsize; i++) {
-        for (int j = 0; j < zsize; j++) {
-            for (int k = 0; k < ysize; k++)
-                t[k] = values[i+xsize*k+xysize*j];
-            SplineFitter::createNaturalSpline(y, t, deriv);
-            for (int k = 0; k < ysize; k++)
-                d2[i+xsize*k+xysize*j] = SplineFitter::evaluateSplineDerivative(y, t, deriv, y[k]);
+        t.resize(ysize);
+        deriv.resize(ysize);
+        for (int i = threadIndex; i < xsize; i += threads.getNumThreads()) {
+            for (int j = 0; j < zsize; j++) {
+                for (int k = 0; k < ysize; k++)
+                    t[k] = values[i+xsize*k+xysize*j];
+                SplineFitter::createSpline(y, t, periodic, deriv);
+                for (int k = 0; k < ysize; k++)
+                    d2[i+xsize*k+xysize*j] = SplineFitter::evaluateSplineDerivative(y, t, deriv, y[k]);
+            }
         }
-    }
 
-    // Compute derivatives with respect to z.
+        // Compute derivatives with respect to z.
 
-    t.resize(zsize);
-    deriv.resize(zsize);
-    for (int i = 0; i < xsize; i++) {
-        for (int j = 0; j < ysize; j++) {
-            for (int k = 0; k < zsize; k++)
-                t[k] = values[i+xsize*j+xysize*k];
-            SplineFitter::createNaturalSpline(z, t, deriv);
-            for (int k = 0; k < zsize; k++)
-                d3[i+xsize*j+xysize*k] = SplineFitter::evaluateSplineDerivative(z, t, deriv, z[k]);
+        t.resize(zsize);
+        deriv.resize(zsize);
+        for (int i = threadIndex; i < xsize; i += threads.getNumThreads()) {
+            for (int j = 0; j < ysize; j++) {
+                for (int k = 0; k < zsize; k++)
+                    t[k] = values[i+xsize*j+xysize*k];
+                SplineFitter::createSpline(z, t, periodic, deriv);
+                for (int k = 0; k < zsize; k++)
+                    d3[i+xsize*j+xysize*k] = SplineFitter::evaluateSplineDerivative(z, t, deriv, z[k]);
+            }
         }
-    }
 
-    // Compute second derivatives with respect to x and y.
+        // Compute second derivatives with respect to x and y.
 
-    t.resize(xsize);
-    deriv.resize(xsize);
-    for (int i = 0; i < ysize; i++) {
-        for (int j = 0; j < zsize; j++) {
-            for (int k = 0; k < xsize; k++)
-                t[k] = d2[k+xsize*i+xysize*j];
-            SplineFitter::createNaturalSpline(x, t, deriv);
-            for (int k = 0; k < xsize; k++)
-                d12[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+        t.resize(xsize);
+        deriv.resize(xsize);
+        threads.syncThreads();
+        for (int i = threadIndex; i < ysize; i += threads.getNumThreads()) {
+            for (int j = 0; j < zsize; j++) {
+                for (int k = 0; k < xsize; k++)
+                    t[k] = d2[k+xsize*i+xysize*j];
+                SplineFitter::createSpline(x, t, periodic, deriv);
+                for (int k = 0; k < xsize; k++)
+                    d12[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+            }
         }
-    }
 
-    // Compute second derivatives with respect to y and z.
+        // Compute second derivatives with respect to y and z.
 
-    t.resize(ysize);
-    deriv.resize(ysize);
-    for (int i = 0; i < zsize; i++) {
-        for (int j = 0; j < xsize; j++) {
-            for (int k = 0; k < ysize; k++)
-                t[k] = d3[j+xsize*k+xysize*i];
-            SplineFitter::createNaturalSpline(y, t, deriv);
-            for (int k = 0; k < ysize; k++)
-                d23[j+xsize*k+xysize*i] = SplineFitter::evaluateSplineDerivative(y, t, deriv, y[k]);
+        t.resize(ysize);
+        deriv.resize(ysize);
+        for (int i = threadIndex; i < zsize; i += threads.getNumThreads()) {
+            for (int j = 0; j < xsize; j++) {
+                for (int k = 0; k < ysize; k++)
+                    t[k] = d3[j+xsize*k+xysize*i];
+                SplineFitter::createSpline(y, t, periodic, deriv);
+                for (int k = 0; k < ysize; k++)
+                    d23[j+xsize*k+xysize*i] = SplineFitter::evaluateSplineDerivative(y, t, deriv, y[k]);
+            }
         }
-    }
 
-    // Compute second derivatives with respect to x and z.
+        // Compute second derivatives with respect to x and z.
 
-    t.resize(zsize);
-    deriv.resize(zsize);
-    for (int i = 0; i < xsize; i++) {
-        for (int j = 0; j < ysize; j++) {
-            for (int k = 0; k < zsize; k++)
-                t[k] = d1[i+xsize*j+xysize*k];
-            SplineFitter::createNaturalSpline(z, t, deriv);
-            for (int k = 0; k < zsize; k++)
-                d13[i+xsize*j+xysize*k] = SplineFitter::evaluateSplineDerivative(z, t, deriv, z[k]);
+        t.resize(zsize);
+        deriv.resize(zsize);
+        for (int i = 0; i < xsize; i++) {
+            for (int j = 0; j < ysize; j++) {
+                for (int k = 0; k < zsize; k++)
+                    t[k] = d1[i+xsize*j+xysize*k];
+                SplineFitter::createSpline(z, t, periodic, deriv);
+                for (int k = 0; k < zsize; k++)
+                    d13[i+xsize*j+xysize*k] = SplineFitter::evaluateSplineDerivative(z, t, deriv, z[k]);
+            }
         }
-    }
 
-    // Compute third derivatives with respect to x, y, and z.
+        // Compute third derivatives with respect to x, y, and z.
 
-    t.resize(xsize);
-    deriv.resize(xsize);
-    for (int i = 0; i < ysize; i++) {
-        for (int j = 0; j < zsize; j++) {
-            for (int k = 0; k < xsize; k++)
-                t[k] = d23[k+xsize*i+xysize*j];
-            SplineFitter::createNaturalSpline(x, t, deriv);
-            for (int k = 0; k < xsize; k++)
-                d123[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+        t.resize(xsize);
+        deriv.resize(xsize);
+        threads.syncThreads();
+        for (int i = threadIndex; i < ysize; i += threads.getNumThreads()) {
+            for (int j = 0; j < zsize; j++) {
+                for (int k = 0; k < xsize; k++)
+                    t[k] = d23[k+xsize*i+xysize*j];
+                SplineFitter::createSpline(x, t, periodic, deriv);
+                for (int k = 0; k < xsize; k++)
+                    d123[k+xsize*i+xysize*j] = SplineFitter::evaluateSplineDerivative(x, t, deriv, x[k]);
+            }
         }
-    }
+    });
+    threads.waitForThreads();
+    threads.resumeThreads();
+    threads.waitForThreads();
+    threads.resumeThreads();
+    threads.waitForThreads();
 
     // Now compute the coefficients.  This involves multiplying by a sparse 64x64 matrix, given
     // here in packed form.
@@ -556,49 +587,60 @@ void SplineFitter::create3DNaturalSpline(const vector<double>& x, const vector<d
             weight[i].push_back(wt[index++]);
         }
     }
-    vector<double> rhs(64);
     c.resize((xsize-1)*(ysize-1)*(zsize-1));
-    for (int i = 0; i < xsize-1; i++) {
-        for (int j = 0; j < ysize-1; j++) {
-            for (int k = 0; k < zsize-1; k++) {
-                // Compute the 64 coefficients for patch (i, j, k).
+    atomic<int> atomicCounter(0);
+    threads.execute([&] (ThreadPool& threads, int threadIndex) {
+        vector<double> rhs(64);
+        while (true) {
+            int i = atomicCounter++;
+            if (i >= xsize-1)
+                break;
+            for (int j = 0; j < ysize-1; j++) {
+                for (int k = 0; k < zsize-1; k++) {
+                    // Compute the 64 coefficients for patch (i, j, k).
 
-                int nexti = i+1;
-                int nextj = j+1;
-                int nextk = k+1;
-                double deltax = x[nexti]-x[i];
-                double deltay = y[nextj]-y[j];
-                double deltaz = z[nextk]-z[k];
-                double e[] = {values[i+j*xsize+k*xysize], values[nexti+j*xsize+k*xysize], values[i+nextj*xsize+k*xysize], values[nexti+nextj*xsize+k*xysize], values[i+j*xsize+nextk*xysize], values[nexti+j*xsize+nextk*xysize], values[i+nextj*xsize+nextk*xysize], values[nexti+nextj*xsize+nextk*xysize]};
-                double e1[] = {d1[i+j*xsize+k*xysize], d1[nexti+j*xsize+k*xysize], d1[i+nextj*xsize+k*xysize], d1[nexti+nextj*xsize+k*xysize], d1[i+j*xsize+nextk*xysize], d1[nexti+j*xsize+nextk*xysize], d1[i+nextj*xsize+nextk*xysize], d1[nexti+nextj*xsize+nextk*xysize]};
-                double e2[] = {d2[i+j*xsize+k*xysize], d2[nexti+j*xsize+k*xysize], d2[i+nextj*xsize+k*xysize], d2[nexti+nextj*xsize+k*xysize], d2[i+j*xsize+nextk*xysize], d2[nexti+j*xsize+nextk*xysize], d2[i+nextj*xsize+nextk*xysize], d2[nexti+nextj*xsize+nextk*xysize]};
-                double e3[] = {d3[i+j*xsize+k*xysize], d3[nexti+j*xsize+k*xysize], d3[i+nextj*xsize+k*xysize], d3[nexti+nextj*xsize+k*xysize], d3[i+j*xsize+nextk*xysize], d3[nexti+j*xsize+nextk*xysize], d3[i+nextj*xsize+nextk*xysize], d3[nexti+nextj*xsize+nextk*xysize]};
-                double e12[] = {d12[i+j*xsize+k*xysize], d12[nexti+j*xsize+k*xysize], d12[i+nextj*xsize+k*xysize], d12[nexti+nextj*xsize+k*xysize], d12[i+j*xsize+nextk*xysize], d12[nexti+j*xsize+nextk*xysize], d12[i+nextj*xsize+nextk*xysize], d12[nexti+nextj*xsize+nextk*xysize]};
-                double e13[] = {d13[i+j*xsize+k*xysize], d13[nexti+j*xsize+k*xysize], d13[i+nextj*xsize+k*xysize], d13[nexti+nextj*xsize+k*xysize], d13[i+j*xsize+nextk*xysize], d13[nexti+j*xsize+nextk*xysize], d13[i+nextj*xsize+nextk*xysize], d13[nexti+nextj*xsize+nextk*xysize]};
-                double e23[] = {d23[i+j*xsize+k*xysize], d23[nexti+j*xsize+k*xysize], d23[i+nextj*xsize+k*xysize], d23[nexti+nextj*xsize+k*xysize], d23[i+j*xsize+nextk*xysize], d23[nexti+j*xsize+nextk*xysize], d23[i+nextj*xsize+nextk*xysize], d23[nexti+nextj*xsize+nextk*xysize]};
-                double e123[] = {d123[i+j*xsize+k*xysize], d123[nexti+j*xsize+k*xysize], d123[i+nextj*xsize+k*xysize], d123[nexti+nextj*xsize+k*xysize], d123[i+j*xsize+nextk*xysize], d123[nexti+j*xsize+nextk*xysize], d123[i+nextj*xsize+nextk*xysize], d123[nexti+nextj*xsize+nextk*xysize]};
-                for (int m = 0; m < 8; m++) {
-                    rhs[m] = e[m];
-                    rhs[m+8] = e1[m]*deltax;
-                    rhs[m+16] = e2[m]*deltay;
-                    rhs[m+24] = e3[m]*deltaz;
-                    rhs[m+32] = e12[m]*deltax*deltay;
-                    rhs[m+40] = e13[m]*deltax*deltaz;
-                    rhs[m+48] = e23[m]*deltay*deltaz;
-                    rhs[m+56] = e123[m]*deltax*deltay*deltaz;
-                }
-                vector<double>& coeff = c[i+j*(xsize-1)+k*(xsize-1)*(ysize-1)];
-                coeff.resize(64);
-                for (int m = 0; m < 64; m++) {
-                    double sum = 0.0;
-                    int numElements = weight[m].size();
-                    for (int n = 0; n < numElements; n += 2)
-                        sum += weight[m][n+1]*rhs[weight[m][n]];
-                    coeff[m] = sum;
+                    int nexti = i+1;
+                    int nextj = j+1;
+                    int nextk = k+1;
+                    double deltax = x[nexti]-x[i];
+                    double deltay = y[nextj]-y[j];
+                    double deltaz = z[nextk]-z[k];
+                    double e[] = {values[i+j*xsize+k*xysize], values[nexti+j*xsize+k*xysize], values[i+nextj*xsize+k*xysize], values[nexti+nextj*xsize+k*xysize], values[i+j*xsize+nextk*xysize], values[nexti+j*xsize+nextk*xysize], values[i+nextj*xsize+nextk*xysize], values[nexti+nextj*xsize+nextk*xysize]};
+                    double e1[] = {d1[i+j*xsize+k*xysize], d1[nexti+j*xsize+k*xysize], d1[i+nextj*xsize+k*xysize], d1[nexti+nextj*xsize+k*xysize], d1[i+j*xsize+nextk*xysize], d1[nexti+j*xsize+nextk*xysize], d1[i+nextj*xsize+nextk*xysize], d1[nexti+nextj*xsize+nextk*xysize]};
+                    double e2[] = {d2[i+j*xsize+k*xysize], d2[nexti+j*xsize+k*xysize], d2[i+nextj*xsize+k*xysize], d2[nexti+nextj*xsize+k*xysize], d2[i+j*xsize+nextk*xysize], d2[nexti+j*xsize+nextk*xysize], d2[i+nextj*xsize+nextk*xysize], d2[nexti+nextj*xsize+nextk*xysize]};
+                    double e3[] = {d3[i+j*xsize+k*xysize], d3[nexti+j*xsize+k*xysize], d3[i+nextj*xsize+k*xysize], d3[nexti+nextj*xsize+k*xysize], d3[i+j*xsize+nextk*xysize], d3[nexti+j*xsize+nextk*xysize], d3[i+nextj*xsize+nextk*xysize], d3[nexti+nextj*xsize+nextk*xysize]};
+                    double e12[] = {d12[i+j*xsize+k*xysize], d12[nexti+j*xsize+k*xysize], d12[i+nextj*xsize+k*xysize], d12[nexti+nextj*xsize+k*xysize], d12[i+j*xsize+nextk*xysize], d12[nexti+j*xsize+nextk*xysize], d12[i+nextj*xsize+nextk*xysize], d12[nexti+nextj*xsize+nextk*xysize]};
+                    double e13[] = {d13[i+j*xsize+k*xysize], d13[nexti+j*xsize+k*xysize], d13[i+nextj*xsize+k*xysize], d13[nexti+nextj*xsize+k*xysize], d13[i+j*xsize+nextk*xysize], d13[nexti+j*xsize+nextk*xysize], d13[i+nextj*xsize+nextk*xysize], d13[nexti+nextj*xsize+nextk*xysize]};
+                    double e23[] = {d23[i+j*xsize+k*xysize], d23[nexti+j*xsize+k*xysize], d23[i+nextj*xsize+k*xysize], d23[nexti+nextj*xsize+k*xysize], d23[i+j*xsize+nextk*xysize], d23[nexti+j*xsize+nextk*xysize], d23[i+nextj*xsize+nextk*xysize], d23[nexti+nextj*xsize+nextk*xysize]};
+                    double e123[] = {d123[i+j*xsize+k*xysize], d123[nexti+j*xsize+k*xysize], d123[i+nextj*xsize+k*xysize], d123[nexti+nextj*xsize+k*xysize], d123[i+j*xsize+nextk*xysize], d123[nexti+j*xsize+nextk*xysize], d123[i+nextj*xsize+nextk*xysize], d123[nexti+nextj*xsize+nextk*xysize]};
+                    for (int m = 0; m < 8; m++) {
+                        rhs[m] = e[m];
+                        rhs[m+8] = e1[m]*deltax;
+                        rhs[m+16] = e2[m]*deltay;
+                        rhs[m+24] = e3[m]*deltaz;
+                        rhs[m+32] = e12[m]*deltax*deltay;
+                        rhs[m+40] = e13[m]*deltax*deltaz;
+                        rhs[m+48] = e23[m]*deltay*deltaz;
+                        rhs[m+56] = e123[m]*deltax*deltay*deltaz;
+                    }
+                    vector<double>& coeff = c[i+j*(xsize-1)+k*(xsize-1)*(ysize-1)];
+                    coeff.resize(64);
+                    for (int m = 0; m < 64; m++) {
+                        double sum = 0.0;
+                        int numElements = weight[m].size();
+                        for (int n = 0; n < numElements; n += 2)
+                            sum += weight[m][n+1]*rhs[weight[m][n]];
+                        coeff[m] = sum;
+                    }
                 }
             }
         }
-    }
+    });
+    threads.waitForThreads();
+}
+
+void SplineFitter::create3DNaturalSpline(const vector<double>& x, const vector<double>& y, const vector<double>& z, const vector<double>& values, vector<vector<double> >& c) {
+    SplineFitter::create3DSpline(x, y, z, values, false, c);
 }
 
 double SplineFitter::evaluate3DSpline(const vector<double>& x, const vector<double>& y, const vector<double>& z, const vector<double>& values, const vector<vector<double> >& c, double u, double v, double w) {

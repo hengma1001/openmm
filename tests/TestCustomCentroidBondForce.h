@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2015-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2015-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -54,21 +52,9 @@ void testHarmonicBond() {
     system.addParticle(5.0);
     CustomCentroidBondForce* force = new CustomCentroidBondForce(2, "k*distance(g1,g2)^2");
     force->addPerBondParameter("k");
-    vector<int> particles1;
-    particles1.push_back(0);
-    particles1.push_back(1);
-    vector<int> particles2;
-    particles2.push_back(2);
-    particles2.push_back(3);
-    particles2.push_back(4);
-    force->addGroup(particles1);
-    force->addGroup(particles2);
-    vector<int> groups;
-    groups.push_back(0);
-    groups.push_back(1);
-    vector<double> parameters;
-    parameters.push_back(1.0);
-    force->addBond(groups, parameters);
+    force->addGroup({0, 1});
+    force->addGroup({2, 3, 4});
+    force->addBond({0, 1}, {1.0});
     system.addForce(force);
     ASSERT(!system.usesPeriodicBoundaryConditions());
 
@@ -99,8 +85,7 @@ void testHarmonicBond() {
 
     // Update the per-bond parameter and see if the results change.
 
-    parameters[0] = 2.0;
-    force->setBondParameters(0, groups, parameters);
+    force->setBondParameters(0, {0, 1}, {2.0});
     force->updateParametersInContext(context);
     state = context.getState(State::Forces | State::Energy);
     ASSERT_EQUAL_TOL(2*2.5*2.5, state.getPotentialEnergy(), TOL);
@@ -117,7 +102,7 @@ void testHarmonicBond() {
     ASSERT_EQUAL(5, molecules[0].size());
 }
 
-void testComplexFunction() {
+void testComplexFunction(bool byGroups) {
     int numParticles = 5;
     System system;
     for (int i = 0; i < numParticles; i++)
@@ -130,7 +115,12 @@ void testComplexFunction() {
     // CustomCompoundBondForce.  Use that to test a complicated energy function with lots of terms.
 
     CustomCompoundBondForce* compound = new CustomCompoundBondForce(4, "x1+y2+z4+fn(distance(p1,p2))*angle(p3,p2,p4)+scale*dihedral(p2,p1,p4,p3)");
-    CustomCentroidBondForce* centroid = new CustomCentroidBondForce(4, "x1+y2+z4+fn(distance(g1,g2))*angle(g3,g2,g4)+scale*dihedral(g2,g1,g4,g3)");
+    string expression;
+    if (byGroups)
+        expression = "x1+y2+z4+fn(distance(g1,g2))*angle(g3,g2,g4)+scale*dihedral(g2,g1,g4,g3)";
+    else
+        expression = "x1+y2+z4+fn(pointdistance(x1,y1,z1,x2,y2,z2))*pointangle(x3,y3,z3,x2,y2,z2,x4,y4,z4)+scale*pointdihedral(x2,y2,z2,x1,y1,z1,x4,y4,z4,x3,y3,z3)";
+    CustomCentroidBondForce* centroid = new CustomCentroidBondForce(4, expression);
     compound->addGlobalParameter("scale", 0.5);
     centroid->addGlobalParameter("scale", 0.5);
     compound->addTabulatedFunction("fn", new Continuous1DFunction(table, -1, 10));
@@ -200,6 +190,18 @@ void testComplexFunction() {
         for (int i = 0; i < numParticles; i++)
             ASSERT_EQUAL_VEC(state1.getForces()[i], state2.getForces()[i], TOL);
     }
+
+    // Try updating the tabulated function.
+
+    for (int i = 0; i < table.size(); i++)
+        table[i] *= 0.5;
+    dynamic_cast<Continuous1DFunction&>(compound->getTabulatedFunction(0)).setFunctionParameters(table, -1, 10);
+    dynamic_cast<Continuous1DFunction&>(centroid->getTabulatedFunction(0)).setFunctionParameters(table, -1, 10);
+    compound->updateParametersInContext(context);
+    centroid->updateParametersInContext(context);
+    State state1 = context.getState(State::Energy, false, 1<<0);
+    State state2 = context.getState(State::Energy, false, 1<<1);
+    ASSERT_EQUAL_TOL(state1.getPotentialEnergy(), state2.getPotentialEnergy(), TOL);
 }
 
 void testCustomWeights() {
@@ -221,11 +223,7 @@ void testCustomWeights() {
     weights[0] = 2.0;
     weights[1] = 1.0;
     force->addGroup(particles, weights);
-    vector<int> groups;
-    groups.push_back(0);
-    groups.push_back(1);
-    vector<double> parameters;
-    force->addBond(groups, parameters);
+    force->addBond({0, 1});
     system.addForce(force);
 
     // The center of mass of group 0 is (0, 1, 0).
@@ -257,14 +255,9 @@ void testIllegalVariable() {
     system.addParticle(1.0);
     system.addParticle(1.0);
     CustomCentroidBondForce* force = new CustomCentroidBondForce(2, "1+none");
-    vector<int> particles;
-    particles.push_back(0);
-    force->addGroup(particles);
-    force->addGroup(particles);
-    vector<int> groups;
-    groups.push_back(0);
-    groups.push_back(1);
-    force->addBond(groups);
+    force->addGroup({0});
+    force->addGroup({0});
+    force->addBond({0, 1});
     system.addForce(force);
     VerletIntegrator integrator(0.001);
     bool threwException = false;
@@ -277,7 +270,7 @@ void testIllegalVariable() {
     ASSERT(threwException);
 }
 
-void testPeriodic() {
+void testPeriodic(bool byGroups) {
     // Create a force that uses periodic boundary conditions.
     
     System system;
@@ -287,23 +280,16 @@ void testPeriodic() {
     system.addParticle(4.0);
     system.addParticle(5.0);
     system.setDefaultPeriodicBoxVectors(Vec3(2, 0, 0), Vec3(0, 3, 0), Vec3(0, 0, 3));
-    CustomCentroidBondForce* force = new CustomCentroidBondForce(2, "k*distance(g1,g2)^2");
+    string expression;
+    if (byGroups)
+        expression = "k*distance(g1,g2)^2";
+    else
+        expression = "k*pointdistance(x1,y1,z1,x2,y2,z2)^2";
+    CustomCentroidBondForce* force = new CustomCentroidBondForce(2, expression);
     force->addPerBondParameter("k");
-    vector<int> particles1;
-    particles1.push_back(0);
-    particles1.push_back(1);
-    vector<int> particles2;
-    particles2.push_back(2);
-    particles2.push_back(3);
-    particles2.push_back(4);
-    force->addGroup(particles1);
-    force->addGroup(particles2);
-    vector<int> groups;
-    groups.push_back(0);
-    groups.push_back(1);
-    vector<double> parameters;
-    parameters.push_back(1.0);
-    force->addBond(groups, parameters);
+    force->addGroup({0, 1});
+    force->addGroup({2, 3, 4});
+    force->addBond({0, 1}, {1.0});
     force->setUsesPeriodicBoundaryConditions(true);
     system.addForce(force);
 
@@ -345,20 +331,9 @@ void testEnergyParameterDerivatives() {
     force->addGlobalParameter("k", 0.0);
     force->addEnergyParameterDerivative("r0");
     force->addEnergyParameterDerivative("k");
-    vector<int> particles1;
-    particles1.push_back(0);
-    particles1.push_back(1);
-    vector<int> particles2;
-    particles2.push_back(2);
-    particles2.push_back(3);
-    particles2.push_back(4);
-    force->addGroup(particles1);
-    force->addGroup(particles2);
-    vector<int> groups;
-    groups.push_back(0);
-    groups.push_back(1);
-    vector<double> parameters;
-    force->addBond(groups, parameters);
+    force->addGroup({0, 1});
+    force->addGroup({2, 3, 4});
+    force->addBond({0, 1});
     system.addForce(force);
 
     // The center of mass of group 0 is (1.5, 0, 0).
@@ -398,10 +373,12 @@ int main(int argc, char* argv[]) {
     try {
         initializeTests(argc, argv);
         testHarmonicBond();
-        testComplexFunction();
+        testComplexFunction(true);
+        testComplexFunction(false);
         testCustomWeights();
         testIllegalVariable();
-        testPeriodic();
+        testPeriodic(true);
+        testPeriodic(false);
         testEnergyParameterDerivatives();
         runPlatformTests();
     }

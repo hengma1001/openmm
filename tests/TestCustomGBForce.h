@@ -2,12 +2,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -46,7 +44,7 @@ using namespace std;
 
 const double TOL = 1e-5;
 
-void testOBC(GBSAOBCForce::NonbondedMethod obcMethod, CustomGBForce::NonbondedMethod customMethod) {
+void testOBC(GBSAOBCForce::NonbondedMethod obcMethod, CustomGBForce::NonbondedMethod customMethod, bool triclinic=false) {
     const int numMolecules = 70;
     const int numParticles = numMolecules*2;
     const double boxSize = 10.0;
@@ -60,8 +58,14 @@ void testOBC(GBSAOBCForce::NonbondedMethod obcMethod, CustomGBForce::NonbondedMe
         standardSystem.addParticle(1.0);
         customSystem.addParticle(1.0);
     }
-    standardSystem.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0.0, 0.0), Vec3(0.0, boxSize, 0.0), Vec3(0.0, 0.0, boxSize));
-    customSystem.setDefaultPeriodicBoxVectors(Vec3(boxSize, 0.0, 0.0), Vec3(0.0, boxSize, 0.0), Vec3(0.0, 0.0, boxSize));
+    Vec3 a(boxSize, 0.0, 0.0), b(0.0, boxSize, 0.0), c(0.0, 0.0, boxSize);
+    if (triclinic) {
+        b[0] = 0.1*boxSize;
+        c[0] = -0.1*boxSize;
+        c[1] = -0.15*boxSize;
+    }
+    standardSystem.setDefaultPeriodicBoxVectors(a, b, c);
+    customSystem.setDefaultPeriodicBoxVectors(a, b, c);
     GBSAOBCForce* obc = new GBSAOBCForce();
     CustomGBForce* custom = new CustomGBForce();
     obc->setCutoffDistance(cutoff);
@@ -254,7 +258,7 @@ void testMembrane() {
     double norm = 0.0;
     for (int i = 0; i < (int) forces.size(); ++i)
         norm += forces[i].dot(forces[i]);
-    norm = std::sqrt(norm);
+    norm = sqrt(norm);
     const double stepSize = 1e-2;
     double step = 0.5*stepSize/norm;
     vector<Vec3> positions2(numParticles), positions3(numParticles);
@@ -283,7 +287,7 @@ void testTabulatedFunction() {
     force->addParticle(vector<double>());
     vector<double> table;
     for (int i = 0; i < 21; i++)
-        table.push_back(std::sin(0.25*i));
+        table.push_back(sin(0.25*i));
     force->addTabulatedFunction("fn", new Continuous1DFunction(table, 1.0, 6.0));
     system.addForce(force);
     Context context(system, integrator, platform);
@@ -296,8 +300,8 @@ void testTabulatedFunction() {
         context.setPositions(positions);
         State state = context.getState(State::Forces | State::Energy);
         const vector<Vec3>& forces = state.getForces();
-        double force = (x < 1.0 || x > 6.0 ? 0.0 : -std::cos(x-1.0));
-        double energy = (x < 1.0 || x > 6.0 ? 0.0 : std::sin(x-1.0))+1.0;
+        double force = (x < 1.0 || x > 6.0 ? 0.0 : -cos(x-1.0));
+        double energy = (x < 1.0 || x > 6.0 ? 0.0 : sin(x-1.0))+1.0;
         ASSERT_EQUAL_VEC(Vec3(-force, 0, 0), forces[0], 0.1);
         ASSERT_EQUAL_VEC(Vec3(force, 0, 0), forces[1], 0.1);
         ASSERT_EQUAL_TOL(energy, state.getPotentialEnergy(), 0.02);
@@ -308,7 +312,22 @@ void testTabulatedFunction() {
         positions[1] = Vec3(x, 0, 0);
         context.setPositions(positions);
         State state = context.getState(State::Energy);
-        double energy = (x < 1.0 || x > 6.0 ? 0.0 : std::sin(x-1.0))+1.0;
+        double energy = (x < 1.0 || x > 6.0 ? 0.0 : sin(x-1.0))+1.0;
+        ASSERT_EQUAL_TOL(energy, state.getPotentialEnergy(), 1e-4);
+    }
+
+    // Try updating the tabulated function.
+
+    for (int i = 0; i < table.size(); i++)
+        table[i] *= 0.5;
+    dynamic_cast<Continuous1DFunction&>(force->getTabulatedFunction(0)).setFunctionParameters(table, 1.0, 6.0);
+    force->updateParametersInContext(context);
+    for (int i = 1; i < 20; i++) {
+        double x = 0.25*i+1.0;
+        positions[1] = Vec3(x, 0, 0);
+        context.setPositions(positions);
+        State state = context.getState(State::Energy);
+        double energy = (x < 1.0 || x > 6.0 ? 0.0 : 0.5*sin(x-1.0))+1.0;
         ASSERT_EQUAL_TOL(energy, state.getPotentialEnergy(), 1e-4);
     }
 }
@@ -385,7 +404,7 @@ void testPositionDependence() {
         double norm = 0.0;
         for (int i = 0; i < (int) forces.size(); ++i)
             norm += forces[i].dot(forces[i]);
-        norm = std::sqrt(norm);
+        norm = sqrt(norm);
         const double stepSize = 1e-3;
         double step = 0.5*stepSize/norm;
         vector<Vec3> positions2(2), positions3(2);
@@ -455,7 +474,7 @@ void testExclusions() {
         double norm = 0.0;
         for (int i = 0; i < (int) forces.size(); ++i)
             norm += forces[i].dot(forces[i]);
-        norm = std::sqrt(norm);
+        norm = sqrt(norm);
         if (norm > 0) {
             const double stepSize = 1e-3;
             double step = stepSize/norm;
@@ -545,6 +564,7 @@ int main(int argc, char* argv[]) {
         testOBC(GBSAOBCForce::NoCutoff, CustomGBForce::NoCutoff);
         testOBC(GBSAOBCForce::CutoffNonPeriodic, CustomGBForce::CutoffNonPeriodic);
         testOBC(GBSAOBCForce::CutoffPeriodic, CustomGBForce::CutoffPeriodic);
+        testOBC(GBSAOBCForce::CutoffPeriodic, CustomGBForce::CutoffPeriodic, true);
         testMembrane();
         testTabulatedFunction();
         testMultipleChainRules();

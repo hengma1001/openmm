@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2013 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -156,6 +154,10 @@ public:
 private:
     double data[3];
 };
+
+static Vec3 operator*(double lhs, Vec3 rhs) {
+    return Vec3(rhs[0]*lhs, rhs[1]*lhs, rhs[2]*lhs);
+}
 
 template <class CHAR, class TRAITS>
 std::basic_ostream<CHAR,TRAITS>& operator<<(std::basic_ostream<CHAR,TRAITS>& o, const Vec3& v) {

@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -56,12 +54,14 @@ public:
         return key;
     }
     /**
-     * Create a MonteCarloBarostat.
+     * Create a RPMDMonteCarloBarostat.
      *
-     * @param defaultPressure   the default pressure acting on the system (in bar)
-     * @param frequency         the frequency at which Monte Carlo pressure changes should be attempted (in time steps)
+     * @param defaultPressure         the default pressure acting on the system (in bar)
+     * @param frequency               the frequency at which Monte Carlo pressure changes should be attempted (in time steps)
+     * @param scaleMoleculesAsRigid   if true, coordinate scaling keeps molecules rigid, scaling only the center of mass
+     *                                of each one.  If false, every atom is scaled independently.
      */
-    RPMDMonteCarloBarostat(double defaultPressure, int frequency = 25);
+    RPMDMonteCarloBarostat(double defaultPressure, int frequency=25, bool scaleMoleculesAsRigid=true);
     /**
      * Get the default pressure acting on the system (in bar).
      *
@@ -76,9 +76,7 @@ public:
      *
      * @param pressure   the default pressure acting on the system, measured in bar.
      */
-    void setDefaultPressure(double pressure) {
-        defaultPressure = pressure;
-    }
+    void setDefaultPressure(double pressure);
     /**
      * Get the frequency (in time steps) at which Monte Carlo pressure changes should be attempted.  If this is set to
      * 0, the barostat is disabled.
@@ -90,9 +88,7 @@ public:
      * Set the frequency (in time steps) at which Monte Carlo pressure changes should be attempted.  If this is set to
      * 0, the barostat is disabled.
      */
-    void setFrequency(int freq) {
-        frequency = freq;
-    }
+    void setFrequency(int freq);
     /**
      * Get the random number seed.  See setRandomNumberSeed() for details.
      */
@@ -122,9 +118,26 @@ public:
     bool usesPeriodicBoundaryConditions() const {
         return true;
     }
+    /**
+     * Get whether scaling is applied to the centroid of each molecule while keeping
+     * the molecules rigid, or to each atom independently.
+     *
+     * @returns true if scaling is applied to molecule centroids, false if it is applied to each atom independently.
+     */
+    bool getScaleMoleculesAsRigid() const {
+        return scaleMoleculesAsRigid;
+    }
+    /**
+     * Set whether scaling is applied to the centroid of each molecule while keeping
+     * the molecules rigid, or to each atom independently.
+     */
+    void setScaleMoleculesAsRigid(bool rigid) {
+        scaleMoleculesAsRigid = rigid;
+    }
 protected:
     ForceImpl* createImpl() const;
 private:
+    bool scaleMoleculesAsRigid;
     double defaultPressure;
     int frequency, randomNumberSeed;
 };

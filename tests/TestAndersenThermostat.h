@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2015 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -163,12 +161,12 @@ void testRandomSeed() {
     Context context(system, integrator, platform);
     context.setPositions(positions);
     context.setVelocities(velocities);
-    integrator.step(10);
+    integrator.step(20);
     State state1 = context.getState(State::Positions);
     context.reinitialize();
     context.setPositions(positions);
     context.setVelocities(velocities);
-    integrator.step(10);
+    integrator.step(20);
     State state2 = context.getState(State::Positions);
 
     // Try twice with a different random seed.
@@ -177,12 +175,12 @@ void testRandomSeed() {
     context.reinitialize();
     context.setPositions(positions);
     context.setVelocities(velocities);
-    integrator.step(10);
+    integrator.step(20);
     State state3 = context.getState(State::Positions);
     context.reinitialize();
     context.setPositions(positions);
     context.setVelocities(velocities);
-    integrator.step(10);
+    integrator.step(20);
     State state4 = context.getState(State::Positions);
 
     // Compare the results.

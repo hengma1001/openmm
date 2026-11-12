@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMDrude                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2013 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -30,6 +28,7 @@
  * -------------------------------------------------------------------------- */
 
 #ifdef WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sstream>
 #else
@@ -42,14 +41,15 @@
 
 #include "openmm/DrudeForce.h"
 #include "openmm/DrudeLangevinIntegrator.h"
+#include "openmm/DrudeNoseHooverIntegrator.h"
 
 #include "openmm/serialization/SerializationProxy.h"
 
 #include "openmm/serialization/DrudeForceProxy.h"
 #include "openmm/serialization/DrudeLangevinIntegratorProxy.h"
+#include "openmm/serialization/DrudeNoseHooverIntegratorProxy.h"
 
 #if defined(WIN32)
-    #include <windows.h>
     extern "C" OPENMM_EXPORT_DRUDE void registerDrudeSerializationProxies();
     BOOL WINAPI DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
         if (ul_reason_for_call == DLL_PROCESS_ATTACH)
@@ -65,4 +65,5 @@ using namespace OpenMM;
 extern "C" OPENMM_EXPORT_DRUDE void registerDrudeSerializationProxies() {
     SerializationProxy::registerProxy(typeid(DrudeForce), new DrudeForceProxy());
     SerializationProxy::registerProxy(typeid(DrudeLangevinIntegrator), new DrudeLangevinIntegratorProxy());
+    SerializationProxy::registerProxy(typeid(DrudeNoseHooverIntegrator), new DrudeNoseHooverIntegratorProxy());
 }

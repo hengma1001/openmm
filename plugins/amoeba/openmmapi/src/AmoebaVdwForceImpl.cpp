@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                               OpenMMAmoeba                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2022 Stanford University and the Authors.      *
  * Authors:                                                                   *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,16 +32,13 @@
 #endif
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/AmoebaVdwForceImpl.h"
+#include "openmm/internal/Messages.h"
 #include "openmm/amoebaKernels.h"
 #include <map>
 #include <cmath>
 
 using namespace OpenMM;
 using namespace std;
-
-using std::pair;
-using std::vector;
-using std::set;
 
 AmoebaVdwForceImpl::AmoebaVdwForceImpl(const AmoebaVdwForce& owner) : owner(owner) {
 }
@@ -56,6 +51,24 @@ void AmoebaVdwForceImpl::initialize(ContextImpl& context) {
 
     if (owner.getNumParticles() != system.getNumParticles())
         throw OpenMMException("AmoebaVdwForce must have exactly as many particles as the System it belongs to.");
+    for (int i = 0; i < owner.getNumParticles(); i++) {
+        int parentIndex, typeIndex;
+        double sigma, epsilon, reductionFactor, scaleFactor;
+        bool isAlchemical;
+        owner.getParticleParameters(i, parentIndex, sigma, epsilon, reductionFactor, isAlchemical, typeIndex, scaleFactor);
+        if (sigma < 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle cannot be negative");
+        if (owner.getPotentialFunction() == AmoebaVdwForce::Buffered147 && sigma == 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle cannot be zero");
+    }
+    for (int i = 0; i < owner.getNumParticleTypes(); i++) {
+        double sigma, epsilon;
+        owner.getParticleTypeParameters(i, sigma, epsilon);
+        if (sigma < 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle type cannot be negative");
+        if (owner.getPotentialFunction() == AmoebaVdwForce::Buffered147 && sigma == 0)
+            throw OpenMMException("AmoebaVdwForce: sigma for a particle type cannot be zero");
+    }
 
     // check that cutoff < 0.5*boxSize
 
@@ -64,7 +77,7 @@ void AmoebaVdwForceImpl::initialize(ContextImpl& context) {
         system.getDefaultPeriodicBoxVectors(boxVectors[0], boxVectors[1], boxVectors[2]);
         double cutoff = owner.getCutoffDistance();
         if (cutoff > 0.5*boxVectors[0][0] || cutoff > 0.5*boxVectors[1][1] || cutoff > 0.5*boxVectors[2][2])
-            throw OpenMMException("AmoebaVdwForce: The cutoff distance cannot be greater than half the periodic box size.");
+            throw OpenMMException("AmoebaVdwForce: "+Messages::cutoffTooLarge);
     }   
 
     kernel = context.getPlatform().createKernel(CalcAmoebaVdwForceKernel::Name(), context);
@@ -77,6 +90,139 @@ double AmoebaVdwForceImpl::calcForcesAndEnergy(ContextImpl& context, bool includ
     return 0.0;
 }
 
+void AmoebaVdwForceImpl::createParameterMatrix(const AmoebaVdwForce& force, vector<int>& type,
+        vector<vector<double> >& sigmaMatrix, vector<vector<double> >& epsilonMatrix) {
+    int numParticles = force.getNumParticles();
+    type.resize(numParticles);
+    int numTypes;
+    vector<double> typeSigma, typeEpsilon;
+    if (force.getUseParticleTypes()) {
+        // We get the types directly from the particles.
+
+        double sigma, epsilon, reduction, scaleFactor;
+        int parent;
+        bool isAlchemical;
+        for (int i = 0; i < numParticles; i++)
+            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, type[i], scaleFactor);
+        numTypes = force.getNumParticleTypes();
+        typeSigma.resize(numTypes);
+        typeEpsilon.resize(numTypes);
+        for (int i = 0; i < numTypes; i++)
+            force.getParticleTypeParameters(i, typeSigma[i], typeEpsilon[i]);
+    }
+    else {
+        // Identify types by finding every unique sigma/epsilon pair.
+
+        map<pair<double, double>, int> typeForParams;
+        for (int i = 0; i < numParticles; i++) {
+            double sigma, epsilon, reduction, scaleFactor;
+            int parent, typeIndex;
+            bool isAlchemical;
+            force.getParticleParameters(i, parent, sigma, epsilon, reduction, isAlchemical, typeIndex, scaleFactor);
+            pair<double, double> params = make_pair(sigma, epsilon);
+            map<pair<double, double>, int>::iterator entry = typeForParams.find(params);
+            if (entry == typeForParams.end()) {
+                int index = typeForParams.size();
+                typeForParams[params] = index;
+            }
+            type[i] = typeForParams[params];
+        }
+        numTypes = typeForParams.size();
+        typeSigma.resize(numTypes);
+        typeEpsilon.resize(numTypes);
+        for (auto params : typeForParams) {
+            typeSigma[params.second] = params.first.first;
+            typeEpsilon[params.second] = params.first.second;
+        }
+    }
+    
+    // Build the matrices by applying combining rules.
+
+    sigmaMatrix.clear();
+    epsilonMatrix.clear();
+    sigmaMatrix.resize(numTypes, vector<double>(numTypes));
+    epsilonMatrix.resize(numTypes, vector<double>(numTypes));
+    string sigmaCombiningRule = force.getSigmaCombiningRule();
+    string epsilonCombiningRule = force.getEpsilonCombiningRule();
+    for (int i = 0; i < numTypes; i++) {
+        double iSigma = typeSigma[i];
+        double iEpsilon = typeEpsilon[i];
+        for (int j = 0; j < numTypes; j++) {
+            double jSigma = typeSigma[j];
+            double jEpsilon = typeEpsilon[j];
+            double sigma, epsilon;
+            // ARITHMETIC = 1
+            // GEOMETRIC  = 2
+            // CUBIC-MEAN = 3
+            if (sigmaCombiningRule == "ARITHMETIC")
+              sigma = iSigma+jSigma;
+            else if (sigmaCombiningRule == "GEOMETRIC")
+              sigma = 2*sqrt(iSigma*jSigma);
+            else if (sigmaCombiningRule == "CUBIC-MEAN") {
+              double iSigma2 = iSigma*iSigma;
+              double jSigma2 = jSigma*jSigma;
+              if ((iSigma2+jSigma2) != 0.0)
+                sigma = 2*(iSigma2*iSigma + jSigma2*jSigma) / (iSigma2+jSigma2);
+              else
+                sigma = 0.0;
+            }
+            else
+                throw OpenMMException("AmoebaVdwForce: Unknown value for sigma combining rule: "+sigmaCombiningRule);
+            sigmaMatrix[i][j] = sigma;
+            sigmaMatrix[j][i] = sigma;
+
+            // ARITHMETIC = 1
+            // GEOMETRIC  = 2
+            // HARMONIC   = 3
+            // W-H        = 4
+            // HHG        = 5
+            if (epsilonCombiningRule == "ARITHMETIC")
+              epsilon = 0.5*(iEpsilon+jEpsilon);
+            else if (epsilonCombiningRule == "GEOMETRIC")
+              epsilon = sqrt(iEpsilon*jEpsilon);
+            else if (epsilonCombiningRule == "HARMONIC") {
+              if ((iEpsilon+jEpsilon) != 0.0)
+                epsilon = 2*(iEpsilon*jEpsilon) / (iEpsilon+jEpsilon);
+              else
+                epsilon = 0.0;
+            }
+            else if (epsilonCombiningRule == "W-H") {
+              double iSigma3 = iSigma * iSigma * iSigma;
+              double jSigma3 = jSigma * jSigma * jSigma;
+              double iSigma6 = iSigma3 * iSigma3;
+              double jSigma6 = jSigma3 * jSigma3;
+              double eps_s = sqrt(iEpsilon*jEpsilon);
+              epsilon = (eps_s == 0.0 ? 0.0 : 2*eps_s*iSigma3*jSigma3/(iSigma6+jSigma6));
+            }
+            else if (epsilonCombiningRule == "HHG") {
+              double epsilonS = sqrt(iEpsilon)+sqrt(jEpsilon);
+              if (epsilonS != 0.0)
+                epsilon = 4*(iEpsilon*jEpsilon) / (epsilonS*epsilonS);
+              else
+                epsilon = 0.0;
+            }
+            else
+                throw OpenMMException("AmoebaVdwForce: Unknown value for epsilon combining rule: "+epsilonCombiningRule);
+            epsilonMatrix[i][j] = epsilon;
+            epsilonMatrix[j][i] = epsilon;
+        }
+    }
+    
+    // Record any type pairs that override the combining rules.
+
+    if (force.getUseParticleTypes()) {
+        for (int i = 0; i < force.getNumTypePairs(); i++) {
+            int type1, type2;
+            double sigma, epsilon;
+            force.getTypePairParameters(i, type1, type2, sigma, epsilon);
+            sigmaMatrix[type1][type2] = sigma;
+            sigmaMatrix[type2][type1] = sigma;
+            epsilonMatrix[type1][type2] = epsilon;
+            epsilonMatrix[type2][type1] = epsilon;
+        }
+    }
+}
+
 double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const AmoebaVdwForce& force) {
 
     // Amoeba VdW dispersion correction implemented by LPW
@@ -84,33 +230,21 @@ double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const 
     if (force.getNonbondedMethod() == AmoebaVdwForce::NoCutoff)
         return 0.0;
 
-    // Identify all particle classes (defined by sigma and epsilon and reduction), and count the number of
+    // Identify all particle classes (defined by sigma and epsilon), and count the number of
     // particles in each class.
 
-    map<pair<double, double>, int> classCounts;
-    for (int i = 0; i < force.getNumParticles(); i++) {
-        double sigma, epsilon, reduction;
-        // The variables reduction, ivindex are not used.
-        int ivindex;
-        // Get the sigma and epsilon parameters, ignoring everything else.
-        force.getParticleParameters(i, ivindex, sigma, epsilon, reduction);
-        pair<double, double> key = make_pair(sigma, epsilon);
-        map<pair<double, double>, int>::iterator entry = classCounts.find(key);
-        if (entry == classCounts.end())
-            classCounts[key] = 1;
-        else
-            entry->second++;
-    }
+    vector<int> type;
+    vector<vector<double> > sigmaMatrix;
+    vector<vector<double> > epsilonMatrix;
+    createParameterMatrix(force, type, sigmaMatrix, epsilonMatrix);
+    int numTypes = sigmaMatrix.size();
+    vector<int> typeCounts(numTypes, 0);
+    for (int i = 0; i < force.getNumParticles(); i++)
+        typeCounts[type[i]]++;
 
     // Compute the VdW tapering coefficients.  Mostly copied from amoebaCudaGpu.cpp.
     double cutoff = force.getCutoffDistance();
     double vdwTaper = 0.90; // vdwTaper is a scaling factor, it is not a distance.
-    double c0 = 0.0;
-    double c1 = 0.0;
-    double c2 = 0.0;
-    double c3 = 0.0;
-    double c4 = 0.0;
-    double c5 = 0.0;
 
     double vdwCut = cutoff;
     double vdwTaperCut = vdwTaper*cutoff;
@@ -135,14 +269,14 @@ double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const 
     double denom2 = denom*denom;
     denom = denom * denom2*denom2;
 
-    c0 = vdwCut * vdwCut2 * (vdwCut2 - 5.0 * vdwCut * vdwTaperCut + 10.0 * vdwTaperCut2) * denom;
-    c1 = -30.0 * vdwCut2 * vdwTaperCut2*denom;
-    c2 = 30.0 * (vdwCut2 * vdwTaperCut + vdwCut * vdwTaperCut2) * denom;
-    c3 = -10.0 * (vdwCut2 + 4.0 * vdwCut * vdwTaperCut + vdwTaperCut2) * denom;
-    c4 = 15.0 * (vdwCut + vdwTaperCut) * denom;
-    c5 = -6.0 * denom;
+    double c0 = vdwCut * vdwCut2 * (vdwCut2 - 5.0 * vdwCut * vdwTaperCut + 10.0 * vdwTaperCut2) * denom;
+    double c1 = -30.0 * vdwCut2 * vdwTaperCut2*denom;
+    double c2 = 30.0 * (vdwCut2 * vdwTaperCut + vdwCut * vdwTaperCut2) * denom;
+    double c3 = -10.0 * (vdwCut2 + 4.0 * vdwCut * vdwTaperCut + vdwTaperCut2) * denom;
+    double c4 = 15.0 * (vdwCut + vdwTaperCut) * denom;
+    double c5 = -6.0 * denom;
 
-    // Loop over all pairs of classes to compute the coefficient.
+    // Loop over all pairs of types to compute the coefficient.
     // Copied over from TINKER - numerical integration.
     double range = 20.0;
     double cut = vdwTaperCut; // This is where tapering BEGINS
@@ -151,63 +285,21 @@ double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const 
     int ndelta = int(double(nstep) * (range - cut));
     double rdelta = (range - cut) / double(ndelta);
     double offset = cut - 0.5 * rdelta;
-    double dhal = 0.07; // This magic number also appears in kCalculateAmoebaCudaVdw14_7.cu
-    double ghal = 0.12; // This magic number also appears in kCalculateAmoebaCudaVdw14_7.cu
+
+    // Buffered-14-7 buffering constants
+    double dhal = 0.07; 
+    double ghal = 0.12;
+
     double elrc = 0.0; // This number is incremented and passed out at the end
     double e = 0.0;
-    double sigma, epsilon; // The pairwise sigma and epsilon parameters.
-    int i = 0, k = 0; // Loop counters.
 
     // Double loop over different atom types.
-    std::string sigmaCombiningRule = force.getSigmaCombiningRule();
-    std::string epsilonCombiningRule = force.getEpsilonCombiningRule();
-    for (auto& class1 : classCounts) {
-        k = 0;
-        for (auto& class2 : classCounts) { 
-            // AMOEBA combining rules, copied over from the CUDA code.
-            double iSigma = class1.first.first;
-            double jSigma = class2.first.first;
-            double iEpsilon = class1.first.second;
-            double jEpsilon = class2.first.second;
-            // ARITHMETIC = 1
-            // GEOMETRIC  = 2
-            // CUBIC-MEAN = 3
-            if (sigmaCombiningRule == "ARITHMETIC") {
-              sigma = iSigma + jSigma;
-            } else if (sigmaCombiningRule == "GEOMETRIC") {
-              sigma = 2.0f * std::sqrt(iSigma * jSigma);
-            } else {
-              double iSigma2 = iSigma*iSigma;
-              double jSigma2 = jSigma*jSigma;
-              if ((iSigma2 + jSigma2) != 0.0) {
-                sigma = 2.0f * (iSigma2 * iSigma + jSigma2 * jSigma) / (iSigma2 + jSigma2);
-              } else {
-                sigma = 0.0;
-              }
-            }
-            // ARITHMETIC = 1
-            // GEOMETRIC  = 2
-            // HARMONIC   = 3
-            // HHG        = 4
-            if (epsilonCombiningRule == "ARITHMETIC") {
-              epsilon = 0.5f * (iEpsilon + jEpsilon);
-            } else if (epsilonCombiningRule == "GEOMETRIC") {
-              epsilon = std::sqrt(iEpsilon * jEpsilon);
-            } else if (epsilonCombiningRule == "HARMONIC") {
-              if ((iEpsilon + jEpsilon) != 0.0) {
-                epsilon = 2.0f * (iEpsilon * jEpsilon) / (iEpsilon + jEpsilon);
-              } else {
-                epsilon = 0.0;
-              }
-            } else {
-              double epsilonS = std::sqrt(iEpsilon) + std::sqrt(jEpsilon);
-              if (epsilonS != 0.0) {
-                epsilon = 4.0f * (iEpsilon * jEpsilon) / (epsilonS * epsilonS);
-              } else {
-                epsilon = 0.0;
-              }
-            }
-            int count = class1.second * class2.second;
+    
+    for (int i = 0; i < numTypes; i++) {
+        for (int j = 0; j < numTypes; j++) {
+            double sigma = sigmaMatrix[i][j];
+            double epsilon = epsilonMatrix[i][j];
+            int count = typeCounts[i]*typeCounts[j];
             // Below is an exact copy of stuff from the previous block.
             double rv = sigma;
             double termik = 2.0 * M_PI * count; // termik is equivalent to 2 * pi * count.
@@ -221,18 +313,18 @@ double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const 
                 r2 = r*r;
                 double r3 = r2 * r;
                 double r6 = r3 * r3;
-                double r7 = r6 * r;
-                // The following is for buffered 14-7 only.
-                /*
-                double rho = r/rv;
-                double term1 = pow(((dhal + 1.0) / (dhal + rho)),7);
-                double term2 = ((ghal + 1.0) / (ghal + pow(rho,7))) - 2.0;
-                e = epsilon * term1 * term2;
-                */
-                double rho = r7 + ghal*rv7;
-                double tau = (dhal + 1.0) / (r + dhal * rv);
-                double tau7 = pow(tau, 7);
-                e = epsilon * rv7 * tau7 * ((ghal + 1.0) * rv7 / rho - 2.0);
+                if (force.getPotentialFunction() == AmoebaVdwForce::LennardJones) {
+                    double p6 = rv6 / r6;
+                    double p12 = p6 * p6;
+                    e = 4 * epsilon * (p12 - p6);
+                }
+                else {
+                    double r7 = r6 * r;
+                    double rho = r7 + ghal * rv7;
+                    double tau = (dhal+1.0) / (r+dhal*rv);
+                    double tau7 = pow(tau, 7);
+                    e = epsilon * rv7 * tau7 * ((ghal+1.0)*rv7/rho-2.0);
+                }
                 double taper = 0.0;
                 if (r < off) {
                     double r4 = r2 * r2;
@@ -243,19 +335,17 @@ double AmoebaVdwForceImpl::calcDispersionCorrection(const System& system, const 
                 etot = etot + e * rdelta * r2;
             }
             elrc = elrc + termik * etot;
-            k++;
         }
-        i++;
     }
     return elrc;
 }
 
 std::vector<std::string> AmoebaVdwForceImpl::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(CalcAmoebaVdwForceKernel::Name());
-    return names;
+    return {CalcAmoebaVdwForceKernel::Name()};
 }
 
 void AmoebaVdwForceImpl::updateParametersInContext(ContextImpl& context) {
     kernel.getAs<CalcAmoebaVdwForceKernel>().copyParametersToContext(context, owner);
 }
+
+

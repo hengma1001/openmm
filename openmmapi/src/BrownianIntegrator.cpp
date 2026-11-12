@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -57,18 +55,32 @@ void BrownianIntegrator::initialize(ContextImpl& contextRef) {
     kernel.getAs<IntegrateBrownianStepKernel>().initialize(contextRef.getSystem(), *this);
 }
 
+void BrownianIntegrator::setTemperature(double temp) {
+    if (temp < 0)
+        throw OpenMMException("Temperature cannot be negative");
+    temperature = temp;
+}
+
+void BrownianIntegrator::setFriction(double coeff) {
+    if (coeff <= 0)
+        throw OpenMMException("Friction must be positive");
+    friction = coeff;
+}
+
 void BrownianIntegrator::cleanup() {
     kernel = Kernel();
 }
 
 vector<string> BrownianIntegrator::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(IntegrateBrownianStepKernel::Name());
-    return names;
+    return {IntegrateBrownianStepKernel::Name()};
 }
 
 double BrownianIntegrator::computeKineticEnergy() {
     return kernel.getAs<IntegrateBrownianStepKernel>().computeKineticEnergy(*context, *this);
+}
+
+bool BrownianIntegrator::kineticEnergyRequiresForce() const {
+    return false;
 }
 
 void BrownianIntegrator::step(int steps) {
@@ -76,7 +88,7 @@ void BrownianIntegrator::step(int steps) {
         throw OpenMMException("This Integrator is not bound to a context!");  
     for (int i = 0; i < steps; ++i) {
         context->updateContextState();
-        context->calcForcesAndEnergy(true, false);
+        context->calcForcesAndEnergy(true, false, getIntegrationForceGroups());
         kernel.getAs<IntegrateBrownianStepKernel>().execute(*context, *this);
     }
 }

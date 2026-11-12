@@ -1,9 +1,13 @@
-import unittest
-from validateModeller import *
-from simtk.openmm.app import *
-from simtk.openmm import *
-from simtk.unit import *
 from collections import defaultdict
+import unittest
+import random
+
+from validateModeller import *
+from openmm.app import *
+from openmm import *
+from openmm.unit import *
+from copy import deepcopy
+
 if sys.version_info >= (3, 0):
     from io import StringIO
 else:
@@ -262,7 +266,7 @@ class TestModeller(unittest.TestCase):
 
         topology_start = self.pdb.topology
         topology_start.setUnitCellDimensions(Vec3(3.5, 3.5, 3.5)*nanometers)
-        for model in ['tip3p', 'spce', 'tip4pew', 'tip5p']:
+        for model in ['tip3p', 'spce', 'tip4pew', 'tip5p', 'swm4ndp']:
             forcefield = ForceField('amber10.xml', model + '.xml')
             modeller = Modeller(topology_start, self.positions)
             # delete water to get the "before" topology
@@ -329,7 +333,6 @@ class TestModeller(unittest.TestCase):
         self.assertVecAlmostEqual(dim3[2]/nanometers, Vec3(0, 0, 5.5))
 
         # Second way of passing in the periodic box vectors: with the boxSize parameter to addSolvent()
-        topology_start = self.pdb.topology
         modeller = Modeller(topology_start, self.positions)
         modeller.deleteWater()
         modeller.addSolvent(self.forcefield, boxSize = Vec3(3.6, 4.6, 5.6)*nanometers)
@@ -341,7 +344,6 @@ class TestModeller(unittest.TestCase):
         self.assertVecAlmostEqual(dim3[2]/nanometers, Vec3(0, 0, 5.6))
 
         # Third way of passing in the periodic box vectors: with the boxVectors parameter to addSolvent()
-        topology_start = self.pdb.topology
         modeller = Modeller(topology_start, self.positions)
         modeller.deleteWater()
         modeller.addSolvent(self.forcefield, boxVectors = (Vec3(3.4, 0, 0), Vec3(0.5, 4.4, 0), Vec3(-1.0, -1.5, 5.4))*nanometers)
@@ -353,24 +355,42 @@ class TestModeller(unittest.TestCase):
         self.assertVecAlmostEqual(dim3[2]/nanometers, Vec3(-1.0, -1.5, 5.4))
 
         # Fourth way of passing in the periodic box vectors: pass a 'padding' value to addSolvent()
-        topology_start = self.pdb.topology
         modeller = Modeller(topology_start, self.positions)
         modeller.deleteWater()
-        modeller.addSolvent(self.forcefield, padding = 1.0*nanometers)
+        modeller.addSolvent(self.forcefield, padding = 0.9*nanometers)
         topology_after = modeller.getTopology()
         dim3 = topology_after.getPeriodicBoxVectors()
 
-        self.assertVecAlmostEqual(dim3[0]/nanometers, Vec3(2.8802, 0, 0))
-        self.assertVecAlmostEqual(dim3[1]/nanometers, Vec3(0, 2.8802, 0))
-        self.assertVecAlmostEqual(dim3[2]/nanometers, Vec3(0, 0, 2.8802))
+        self.assertVecAlmostEqual(dim3[0]/nanometers, Vec3(1.824363, 0, 0))
+        self.assertVecAlmostEqual(dim3[1]/nanometers, Vec3(0, 1.824363, 0))
+        self.assertVecAlmostEqual(dim3[2]/nanometers, Vec3(0, 0, 1.824363))
 
         # Fifth way: specify a number of molecules to add instead of a box size
-        topology_start = self.pdb.topology
         modeller = Modeller(topology_start, self.positions)
         modeller.deleteWater()
         numInitial = len(list(modeller.topology.residues()))
         modeller.addSolvent(self.forcefield, numAdded=1000)
         self.assertEqual(numInitial+1000, len(list(modeller.topology.residues())))
+
+    def test_addSolventBoxShape(self):
+        """Test the addSolvent() method; test the different box shapes."""
+        modeller = Modeller(self.pdb.topology, self.positions)
+        modeller.deleteWater()
+        modeller.addSolvent(self.forcefield, padding=1.0*nanometers, boxShape='cube')
+        cubeVectors = modeller.getTopology().getPeriodicBoxVectors()
+        modeller = Modeller(self.pdb.topology, self.positions)
+        modeller.deleteWater()
+        modeller.addSolvent(self.forcefield, padding=1.0*nanometers, boxShape='dodecahedron')
+        dodecVectors = modeller.getTopology().getPeriodicBoxVectors()
+        modeller = Modeller(self.pdb.topology, self.positions)
+        modeller.deleteWater()
+        modeller.addSolvent(self.forcefield, padding=1.0*nanometers, boxShape='octahedron')
+        octVectors = modeller.getTopology().getPeriodicBoxVectors()
+        cubeVolume = cubeVectors[0][0]*cubeVectors[1][1]*cubeVectors[2][2]/(nanometers**3)
+        dodecVolume = dodecVectors[0][0]*dodecVectors[1][1]*dodecVectors[2][2]/(nanometers**3)
+        octVolume = octVectors[0][0]*octVectors[1][1]*octVectors[2][2]/(nanometers**3)
+        self.assertAlmostEqual(0.707, dodecVolume/cubeVolume, places=3)
+        self.assertAlmostEqual(0.770, octVolume/cubeVolume, places=3)
 
     def test_addSolventNeutralSolvent(self):
         """ Test the addSolvent() method; test adding ions to neutral solvent. """
@@ -399,6 +419,12 @@ class TestModeller(unittest.TestCase):
         expected_ions = math.floor(total_added*expected_ion_fraction+0.5)
         self.assertEqual(sodium_count, expected_ions)
         self.assertEqual(chlorine_count, expected_ions)
+
+        positions = modeller.positions.value_in_unit(nanometer)
+        ion_positions = [positions[atom.index] for atom in topology_after.atoms() if atom.residue.name in ('NA', 'CL')]
+        for i, position in enumerate(ion_positions):
+            for other_position in ion_positions[:i]:
+                self.assertGreater(norm(position-other_position), 0.5)
 
     def test_addSolventNegativeSolvent(self):
         """ Test the addSolvent() method; test adding ions to a negatively charged solvent. """
@@ -549,6 +575,150 @@ class TestModeller(unittest.TestCase):
             self.assertEqual(positive_ion_count, expected_ions)
             self.assertEqual(chlorine_count, expected_ions)
 
+    def runMixture(self, modeller):
+        """ Run some steps of a mixture configuration generated by addMixture to ensure it is stable. """
+
+        ff = ForceField('amber19-all.xml', 'tip5p.xml')
+        system = ff.createSystem(modeller.topology, nonbondedMethod=PME, constraints=HBonds)
+        system.addForce(MonteCarloBarostat(1, 300))
+        simulation = Simulation(modeller.topology, system, LangevinIntegrator(300, 1, 0.002))
+        simulation.context.setPositions(modeller.positions)
+        simulation.context.setVelocitiesToTemperature(300)
+        simulation.step(100)
+        self.assertLess(simulation.context.getState(energy=True).getPotentialEnergy().value_in_unit(kilojoule_per_mole), 0)
+
+    def test_addMixture(self):
+        """ Tests addMixture packing a mixture. """
+
+        component1 = PDBFile('systems/tip5p.pdb')
+        component2 = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+
+        for useSolute in (False, True):
+            if useSolute:
+                topology_start = deepcopy(self.pdb3.topology)
+                topology_start.setPeriodicBoxVectors(None)
+                modeller = Modeller(topology_start, self.pdb3.positions)
+            else:
+                modeller = Modeller(Topology(), [])
+            modeller.addMixture([
+                {'topology': component1.topology, 'positions': component1.positions, 'count': 1100},
+                {'topology': component2.topology, 'positions': component2.positions, 'count': 10},
+            ])
+
+            # Make sure that the topology has the molecules we expect.
+            chains = list(modeller.topology.chains())
+            if useSolute:
+                self.assertEqual(len(chains), 3)
+                chain0, chain1, chain2 = chains
+                self.assertSequenceEqual([residue.name for residue in chain0.residues()], [residue.name for residue in self.pdb3.topology.residues()])
+                self.assertSequenceEqual([residue.name for residue in chain1.residues()], ['HOH'] * 1100)
+                self.assertSequenceEqual([residue.name for residue in chain2.residues()], ['ACE', 'ALA', 'NME'] * 10)
+                self.assertEqual(modeller.topology.getNumAtoms(), self.pdb3.topology.getNumAtoms() + 1100 * component1.topology.getNumAtoms() + 10 * component2.topology.getNumAtoms())
+                self.assertEqual(modeller.topology.getNumBonds(), self.pdb3.topology.getNumBonds() + 1100 * component1.topology.getNumBonds() + 10 * component2.topology.getNumBonds())
+            else:
+                self.assertEqual(len(chains), 2)
+                chain0, chain1 = chains
+                self.assertSequenceEqual([residue.name for residue in chain0.residues()], ['HOH'] * 1100)
+                self.assertSequenceEqual([residue.name for residue in chain1.residues()], ['ACE', 'ALA', 'NME'] * 10)
+                self.assertEqual(modeller.topology.getNumAtoms(), 1100 * component1.topology.getNumAtoms() + 10 * component2.topology.getNumAtoms())
+                self.assertEqual(modeller.topology.getNumBonds(), 1100 * component1.topology.getNumBonds() + 10 * component2.topology.getNumBonds())
+
+            # Make sure the density that was guessed is reasonable.
+            mass = sum([0*dalton if atom.element is None else atom.element.mass for atom in modeller.topology.atoms()])
+            cell = modeller.topology.getUnitCellDimensions()
+            density = (mass / (cell[0] * cell[1] * cell[2])).value_in_unit(gram/milliliter/item)
+            self.assertGreaterEqual(density, 0.8)
+            self.assertLessEqual(density, 1.2)
+
+            self.runMixture(modeller)
+
+    def test_addMixtureBoxDodecahedron(self):
+        """ Tests addMixture with a non-orthorhombic box. """
+
+        component1 = PDBFile('systems/tip5p.pdb')
+        component2 = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+
+        topology_start = deepcopy(self.pdb3.topology)
+        topology_start.setPeriodicBoxVectors(None)
+        modeller = Modeller(topology_start, self.pdb3.positions)
+        modeller.addMixture([
+            {'topology': component1.topology, 'positions': component1.positions, 'count': 1100},
+            {'topology': component2.topology, 'positions': component2.positions, 'count': 10},
+        ], boxShape='dodecahedron')
+
+        # Make sure the density that was guessed is reasonable.
+        mass = sum([0*dalton if atom.element is None else atom.element.mass for atom in modeller.topology.atoms()])
+        cell = modeller.topology.getPeriodicBoxVectors()
+        density = (mass / (cell[0][0] * cell[1][1] * cell[2][2])).value_in_unit(gram/milliliter/item)
+        self.assertGreaterEqual(density, 0.8)
+        self.assertLessEqual(density, 1.2)
+
+        # Make sure that the box vectors are in the shape requested.
+        cell = cell.value_in_unit(nanometer)
+        self.assertVecAlmostEqual(cell[0], [cell[0][0], 0, 0])
+        self.assertVecAlmostEqual(cell[1], [0, cell[0][0], 0])
+        self.assertVecAlmostEqual(cell[2], [0.5 * cell[0][0], 0.5 * cell[0][0], 0.5**0.5 * cell[0][0]])
+
+        self.runMixture(modeller)
+
+    def test_addMixtureBoxSize(self):
+        """ Tests addMixture with the boxSize option set. """
+
+        component1 = PDBFile('systems/tip5p.pdb')
+        component2 = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+
+        modeller = Modeller(self.pdb3.topology, self.pdb3.positions)
+        modeller.addMixture([
+            {'topology': component1.topology, 'positions': component1.positions, 'count': 1100},
+            {'topology': component2.topology, 'positions': component2.positions, 'count': 10},
+        ], boxSize=(34, 34, 34)*angstrom)
+
+        cell = modeller.topology.getPeriodicBoxVectors().value_in_unit(nanometer)
+        self.assertVecAlmostEqual(cell[0], [3.4, 0, 0])
+        self.assertVecAlmostEqual(cell[1], [0, 3.4, 0])
+        self.assertVecAlmostEqual(cell[2], [0, 0, 3.4])
+
+        self.runMixture(modeller)
+
+    def test_addMixtureBoxVectors(self):
+        """ Tests addMixture with the boxVectors option set. """
+
+        component1 = PDBFile('systems/tip5p.pdb')
+        component2 = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+
+        modeller = Modeller(self.pdb3.topology, self.pdb3.positions)
+        modeller.addMixture([
+            {'topology': component1.topology, 'positions': component1.positions, 'count': 1100},
+            {'topology': component2.topology, 'positions': component2.positions, 'count': 10},
+        ], boxVectors=((34, 0, 0), (1, 34, 0), (2, 3, 34))*angstrom)
+
+        cell = modeller.topology.getPeriodicBoxVectors().value_in_unit(nanometer)
+        self.assertVecAlmostEqual(cell[0], [3.4, 0, 0])
+        self.assertVecAlmostEqual(cell[1], [0.1, 3.4, 0])
+        self.assertVecAlmostEqual(cell[2], [0.2, 0.3, 3.4])
+
+        self.runMixture(modeller)
+
+    def test_addMixturePadding(self):
+        """ Tests addMixture with the padding option set. """
+
+        component1 = PDBFile('systems/tip5p.pdb')
+        component2 = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+
+        modeller = Modeller(self.pdb3.topology, self.pdb3.positions)
+        modeller.deleteWater()
+        modeller.addMixture([
+            {'topology': component1.topology, 'positions': component1.positions, 'count': 1100},
+            {'topology': component2.topology, 'positions': component2.positions, 'count': 10},
+        ], padding=0.5*nanometer)
+
+        cell = modeller.topology.getPeriodicBoxVectors().value_in_unit(nanometer)
+        self.assertVecAlmostEqual(cell[0], [3.41128847, 0, 0])
+        self.assertVecAlmostEqual(cell[1], [0, 3.41128847, 0])
+        self.assertVecAlmostEqual(cell[2], [0, 0, 3.41128847])
+
+        self.runMixture(modeller)
+
     def test_addHydrogensPdb2(self):
         """ Test the addHydrogens() method on the T4-lysozyme-L99A pdb file. """
 
@@ -592,6 +762,51 @@ class TestModeller(unittest.TestCase):
         topology_after = modeller.getTopology()
 
         validate_equivalence(self, topology_start, topology_after)
+
+    def test_addHydrogensPdb3_keepPositions(self):
+        """ Test addHydrogens() does not change existing Hs positions """
+
+        # build the Modeller
+        topology_start = self.topology_start3
+        positions = self.positions3.value_in_unit(nanometers)
+        modeller = Modeller(topology_start, positions)
+
+        # Record original hydrogen positions
+        oriH = [atom.index for atom in modeller.topology.atoms() if atom.element == element.hydrogen]
+        oriH_pos = [positions[i] for i in oriH]
+
+        # Remove hydrogens from last residue
+        res_list = list(topology_start.residues())
+        toDelete = [atom for atom in res_list[-1].atoms() if atom.element == element.hydrogen]
+        modeller.delete(toDelete)
+
+        n_deleted = len(toDelete)
+
+        # Add hydrogen atoms back.
+        modeller.addHydrogens(self.forcefield)
+        topology_after = modeller.getTopology()
+
+        # Fetch 'new' positions
+        new_positions = modeller.positions.value_in_unit(nanometers)
+        newH = [atom.index for atom in topology_after.atoms() if atom.element == element.hydrogen]
+        newH_pos = [new_positions[i] for i in newH]
+
+        # Did we add all Hs back in correctly?
+        self.assertEqual(len(newH), len(oriH))
+
+        # Are the old ones at the same position?
+        # Negative control
+        oriH_fixed = oriH_pos[:-1*n_deleted]
+        newH_fixed = newH_pos[:-1*n_deleted]
+        xyz_diff = any([norm(o-n) > 1e-6 for o, n in zip(oriH_fixed, newH_fixed)])
+        self.assertEqual(xyz_diff, False)
+
+        # Were the new ones optimized?
+        # Positive control
+        oriH_added = oriH_pos[-1*n_deleted:]
+        newH_added = newH_pos[-1*n_deleted:]
+        xyz_diff = all([norm(o-n) > 1e-6 for o, n in zip(oriH_added, newH_added)])
+        self.assertEqual(xyz_diff, True)
 
     def test_addHydrogensASH(self):
         """ Test of addHydrogens() in which we force ASH to be a variant using the variants parameter. """
@@ -903,6 +1118,47 @@ class TestModeller(unittest.TestCase):
 
         validate_equivalence(self, topology_LYN, topology_after)
 
+    def test_addHydrogensGlycam(self):
+        """Test adding hydrogens for GLYCAM."""
+        pdb = PDBFile('systems/glycopeptide.pdb')
+        Modeller.loadHydrogenDefinitions('glycam-hydrogens.xml')
+        modeller = Modeller(pdb.topology, pdb.positions)
+        hydrogens = [a for a in modeller.topology.atoms() if a.element == element.hydrogen]
+        modeller.delete(hydrogens)
+        self.assertTrue(modeller.topology.getNumAtoms() < pdb.topology.getNumAtoms())
+        modeller.addHydrogens()
+        self.assertEqual(modeller.topology.getNumAtoms(), pdb.topology.getNumAtoms())
+        for res1, res2 in zip(pdb.topology.residues(), modeller.topology.residues()):
+            names1 = sorted([a.name for a in res1.atoms()])
+            names2 = sorted([a.name for a in res2.atoms()])
+            self.assertEqual(names1, names2)
+        # Reset the loaded definitions so we don't affect other tests.
+        Modeller._residueHydrogens = {}
+        Modeller._hasLoadedStandardHydrogens = False
+
+    def test_addSpecificHydrogens(self):
+        """Test specifying exactly which hydrogens to add."""
+        pdb = PDBFile('systems/glycopeptide.pdb')
+        variants = [None]*pdb.topology.getNumResidues()
+        for residue in pdb.topology.residues():
+            if residue.name != 'ALA':
+                var = []
+                for atom1, atom2 in residue.bonds():
+                    if atom1.element == element.hydrogen:
+                        var.append((atom1.name, atom2.name))
+                    elif atom2.element == element.hydrogen:
+                        var.append((atom2.name, atom1.name))
+                variants[residue.index] = var
+        modeller = Modeller(pdb.topology, pdb.positions)
+        hydrogens = [a for a in modeller.topology.atoms() if a.element == element.hydrogen and random.random() < 0.7]
+        modeller.delete(hydrogens)
+        self.assertTrue(modeller.topology.getNumAtoms() < pdb.topology.getNumAtoms())
+        modeller.addHydrogens(variants=variants)
+        self.assertEqual(modeller.topology.getNumAtoms(), pdb.topology.getNumAtoms())
+        for res1, res2 in zip(pdb.topology.residues(), modeller.topology.residues()):
+            names1 = sorted([a.name for a in res1.atoms()])
+            names2 = sorted([a.name for a in res2.atoms()])
+            self.assertEqual(names1, names2)
 
     def test_removeExtraHydrogens(self):
         """Test that addHydrogens() can remove hydrogens that shouldn't be there. """
@@ -982,7 +1238,7 @@ class TestModeller(unittest.TestCase):
         residue = topology.addResidue('Test', chain)
         topology.addAtom('C', element.carbon, residue)
         topology.addAtom('N', element.nitrogen, residue)
-        topology.addAtom('V', element.oxygen, residue)
+        topology.addAtom('O', element.oxygen, residue)
 
 
         # Add the virtual sites.
@@ -1008,6 +1264,54 @@ class TestModeller(unittest.TestCase):
         state = context.getState(getPositions=True)
         for p1, p2 in zip (pos, state.getPositions()):
             self.assertVecAlmostEqual(p1.value_in_unit(nanometers), p2.value_in_unit(nanometers), 1e-6)
+
+
+    def testNestedVirtualSites(self):
+        """Test adding virtual sites that depend on other virtual sites."""
+        xml = """
+            <ForceField>
+             <AtomTypes>
+              <Type name="C" class="C" element="C" mass="10"/>
+              <Type name="N" class="N" element="N" mass="10"/>
+              <Type name="V" class="V" mass="0.0"/>
+             </AtomTypes>
+             <Residues>
+              <Residue name="Test">
+               <Atom name="C" type="C"/>
+               <Atom name="N" type="N"/>
+               <Atom name="V1" type="V"/>
+               <Atom name="V2" type="V"/>
+               <VirtualSite type="average2" index="2" atom1="0" atom2="1" weight1="0.5" weight2="0.5"/>
+               <VirtualSite type="average2" index="3" atom1="0" atom2="2" weight1="0.5" weight2="0.5"/>
+              </Residue>
+             </Residues>
+            </ForceField>"""
+        ff = ForceField(StringIO(xml))
+
+        # Create the three real atoms.
+
+        topology = Topology()
+        chain = topology.addChain()
+        residue = topology.addResidue('Test', chain)
+        topology.addAtom('C', element.carbon, residue)
+        topology.addAtom('N', element.nitrogen, residue)
+
+        # Add the virtual sites.
+
+        modeller = Modeller(topology, [Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0)]*nanometers)
+        modeller.addExtraParticles(ff)
+        top = modeller.topology
+        pos = modeller.positions
+
+        # Check that the correct particles were added.
+
+        self.assertEqual(len(pos), 4)
+        for atom, elem in zip(top.atoms(), [element.carbon, element.nitrogen, None, None]):
+            self.assertEqual(elem, atom.element)
+
+        # The positions of the first virtual site should be correct, but the second one won't be.
+
+        self.assertVecAlmostEqual(Vec3(0.5, 0.0, 0.0), pos[2].value_in_unit(nanometers), 1e-6)
 
 
     def test_multiSiteIon(self):
@@ -1077,29 +1381,205 @@ class TestModeller(unittest.TestCase):
                 self.assertTrue(dist > (expectedDist-0.01)*nanometers and dist < (expectedDist+0.01)*nanometers)
 
 
-    def test_addMembrane(self):
-        """Test adding a membrane."""
-        pdb = PDBFile('systems/alanine-dipeptide-implicit.pdb')
+    def testWholeMoleculeExtraParticles(self):
+        """Test adding extra particles based on matching a template to a whole molecule."""
+        pdb = PDBFile(StringIO("""
+ATOM      1  C   AAA     1A    0.000     0.000   0.000  1.00  0.00           C
+ATOM      2  C   BBB     2A    1.000     0.000   0.000  1.00  0.00           C
+ATOM      3  O   BBB     2A    2.000     0.000   0.000  1.00  0.00           O
+CONECT    1    2
+CONECT    2    1    3
+CONECT    3    2
+END"""))
+        ff = ForceField(StringIO("""
+<ForceField>
+  <AtomTypes>
+    <Type class="C" element="C" mass="12.01" name="C" />
+    <Type class="O" element="O" mass="16.0" name="O" />
+    <Type class="V" mass="0.0" name="V" />
+  </AtomTypes>
+  <Residues>
+    <Residue name="Molecule">
+      <Atom name="C1" type="C" />
+      <Atom name="C2" type="C" />
+      <Atom name="O" type="O" />
+      <Atom name="V" type="V" />
+      <Bond atomName1="C1" atomName2="C2"/>
+      <Bond atomName1="C2" atomName2="O"/>
+      <VirtualSite type="average2" siteName="V" atomName1="C2" atomName2="O" weight1="0.25" weight2="0.75"/>
+    </Residue>
+  </Residues>
+</ForceField>"""))
         modeller = Modeller(pdb.topology, pdb.positions)
-        ff = ForceField('amber14-all.xml', 'amber14/tip3p.xml')
+        modeller.addExtraParticles(ff)
+        residues = list(modeller.topology.residues())
+        self.assertEqual(2, len(residues))
+        self.assertEqual(1, len(residues[0]))
+        self.assertEqual(3, len(residues[1]))
+        self.assertVecAlmostEqual(Vec3(1.75, 0.0, 0.0), modeller.positions[3].value_in_unit(angstrom))
+        system = ff.createSystem(modeller.topology)
+        self.assertTrue(system.isVirtualSite(3))
 
-        # Add a membrane around alanine dipeptide???  I know, it's a silly thing to do,
-        # but it's fast, and all we care about is whether it works!
 
-        modeller.addMembrane(ff, minimumPadding=0.5*nanometers, ionicStrength=1*molar)
-        resCount = defaultdict(int)
-        for res in modeller.topology.residues():
-            resCount[res.name] += 1
-        self.assertTrue(resCount['POP'] > 1)
-        self.assertTrue(resCount['HOH'] > 1)
-        self.assertTrue(resCount['CL'] > 1)
-        self.assertEqual(resCount['CL'], resCount['NA'])
-        self.assertEqual(1, resCount['ALA'])
-        originalSize = max(pdb.positions) - min(pdb.positions)
-        newSize = modeller.topology.getUnitCellDimensions()
-        for i in range(3):
-            self.assertTrue(newSize[i] >= originalSize[i]+0.5*nanometers)
+    def test_addMembrane(self):
+        """Test adding a membrane to a realistic system."""
 
+        mol = PDBxFile('systems/gpcr.cif')
+        for ff_files in [['amber14-all.xml', 'amber14/tip3p.xml'], ['amber19-all.xml', 'amber19/opc3.xml']]:
+            modeller = Modeller(mol.topology, mol.positions)
+            ff = ForceField(*ff_files)
+
+            # Add a membrane around the GPCR
+            modeller.addMembrane(ff, minimumPadding=1.1*nanometers, ionicStrength=1*molar)
+
+            # Make sure we added everything correctly
+            resCount = defaultdict(int)
+            for res in modeller.topology.residues():
+                resCount[res.name] += 1
+
+            self.assertEqual(16, resCount['ALA'])
+            self.assertEqual(226, resCount['POP'])  # 2x128 - overlapping
+            self.assertTrue(resCount['HOH'] > 1)
+
+            deltaQ = resCount['CL'] - resCount['NA']
+            self.assertEqual(deltaQ, 10)  # protein net q: +10
+
+            # Check _addIons did the right thing.
+            expected_ion_fraction = 1.0*molar/(55.4*molar)
+
+            total_water = resCount['HOH']
+            total_water_ions = resCount['HOH'] + resCount['CL'] + resCount['NA']
+
+            # total_water_ions - protein charge
+            expected_sodium = math.floor((total_water_ions-10)*expected_ion_fraction+0.5)
+            expected_chlorine = expected_sodium + 10
+
+            self.assertEqual(resCount['CL'], expected_chlorine)
+            self.assertEqual(resCount['NA'], expected_sodium)
+
+            # Check lipid numbering for repetitions
+            lipidIdList = [(r.chain.id, r.id) for r in modeller.topology.residues()
+                        if r.name == 'POP']
+            self.assertEqual(len(lipidIdList), len(set(lipidIdList)))
+
+            # Check dimensions to see if padding was respected
+            originalSize = max(mol.positions) - min(mol.positions)
+            newSize = modeller.topology.getUnitCellDimensions()
+            for i in range(3):
+                self.assertTrue(newSize[i] >= originalSize[i]+1.1*nanometers)
+
+    def test_bondTypeAndOrderPreserved(self):
+        """ Check that bond type and order are preserved across multiple operations. 
+
+        Regression test for issue #4112 and similar behaviors.
+        """
+
+        # Given: an isolated molecule
+        pdb = PDBFile("systems/alanine-dipeptide-implicit.pdb")
+        topology, positions = pdb.topology, pdb.positions
+        topology.setUnitCellDimensions(Vec3(3.5, 3.5, 3.5) * nanometers)
+        # with some bonds carrying type and order information
+        for bond in topology.bonds():
+            if ((bond.atom1.element, bond.atom2.element) in [
+                (element.carbon, element.oxygen), (element.oxygen, element.carbon)
+            ]):
+                bond.type = Double
+                bond.order = 2.0
+        modeller = Modeller(topology, positions)
+
+        # When (1): add solvent
+        forcefield = ForceField("amber10.xml", "tip3p.xml")
+        modeller.addSolvent(forcefield, "tip3p")
+        # sanity check: water was added
+        self.assertTrue(any(r.name == "HOH" for r in modeller.topology.residues()))
+
+        # When (2): convert water (no sites added)
+        modeller.convertWater("spce")
+
+        # When (3): convert water with addExtraParticles
+        new_forcefield = ForceField('amber10.xml', 'tip4pew.xml')
+        modeller.addExtraParticles(new_forcefield)
+        # sanity check: extra sites were added
+        self.assertEqual(
+            set([len(list(res.atoms())) for res in modeller.topology.residues() if res.name == "HOH"]),
+            {4}
+        )
+
+        # When (4): delete water (with deleteWater) and hydrogens (with delete)
+        modeller.deleteWater()
+        hydrogens = [a for a in modeller.topology.atoms() if a.element == element.hydrogen]
+        modeller.delete(hydrogens)
+        # sanity check: all gone
+        self.assertFalse(any(a.element == element.hydrogen for a in modeller.topology.atoms()))
+        self.assertFalse(any(r.name == "HOH" for r in modeller.topology.residues()))
+
+        # When (5): add back hydrogens
+        modeller.addHydrogens()
+        # sanity check: hydrogens are back
+        self.assertTrue(any(a.element == element.hydrogen for a in modeller.topology.atoms()))
+
+        # Then (intermediate): bond info have been retained throughout the workflow
+        self.assertIn((Double, 2.0), [(b.type, b.order) for b in modeller.topology.bonds()])
+
+        # When (6): add a modeller (which also bears some bond info)
+        to_add = PDBFile('systems/methanol-box.pdb')
+        topology_to_add = to_add.topology
+        positions_to_add = to_add.positions
+        # add a dummy bond to the "to_add" system to check that it also is preserved
+        atom0, atom1 = (atom for i, atom in enumerate(topology_to_add.atoms()) if i < 2)
+        topology_to_add.addBond(atom0, atom1, Single, 1.0)
+        modeller.add(topology_to_add, positions_to_add)
+
+        # Then: bond info are retained for both the old and the new system
+        all_bond_extra_data = [(b.type, b.order) for b in modeller.topology.bonds()]
+        self.assertEqual(
+            set(all_bond_extra_data),
+            # None and Double from topology; other Nones and Single from topology_to_add
+            {(None, None), (Single, 1.0), (Double, 2.0)}
+        )
+
+    def test_residueTemplates(self):
+        """Test the residueTemplates argument to Modeller methods"""
+
+        # Create a Topology and ForceField involving residues that match multiple templates.
+
+        topology = Topology()
+        chain = topology.addChain()
+        residue1 = topology.addResidue('Fe', chain)
+        topology.addAtom('Fe', element.iron, residue1)
+        residue2 = topology.addResidue('Fe', chain)
+        topology.addAtom('Fe', element.iron, residue2)
+        positions = [Vec3(0, 0, 0), Vec3(1, 0, 0)]*nanometers
+        ff = ForceField('amber14/tip3pfb.xml', 'amber14/lipid17.xml')
+        residueTemplates = {residue1: 'FE2', residue2: 'FE'}
+
+        # Test addSolvent().
+
+        modeller = Modeller(topology, positions)
+        with self.assertRaises(Exception):
+            modeller.addSolvent(ff, padding=1*nanometer)
+        modeller.addSolvent(ff, padding=1*nanometer, residueTemplates=residueTemplates)
+
+        # Test addHydrogens().
+
+        modeller = Modeller(topology, positions)
+        with self.assertRaises(Exception):
+            modeller.addHydrogens(ff)
+        modeller.addHydrogens(ff, residueTemplates=residueTemplates)
+
+        # Test addExtraParticles().
+
+        modeller = Modeller(topology, positions)
+        with self.assertRaises(Exception):
+            modeller.addExtraParticles(ff)
+        modeller.addExtraParticles(ff, residueTemplates=residueTemplates)
+
+        # Test addMembrane().
+
+        modeller = Modeller(topology, positions)
+        with self.assertRaises(Exception):
+            modeller.addMembrane(ff)
+        modeller.addMembrane(ff, residueTemplates=residueTemplates)
 
     def assertVecAlmostEqual(self, p1, p2, tol=1e-7):
         scale = max(1.0, norm(p1),)

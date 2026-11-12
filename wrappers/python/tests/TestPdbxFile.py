@@ -1,17 +1,28 @@
+import tempfile
 import unittest
-from simtk.openmm.app import *
-from simtk.openmm import *
-from simtk.unit import *
-import simtk.openmm.app.element as elem
+from openmm.app import *
+from openmm import *
+from openmm.unit import *
+import openmm.app.element as elem
 import os
-if sys.version_info >= (3, 0):
-    from io import StringIO
-else:
-    from cStringIO import StringIO
+from io import StringIO
 
 class TestPdbxFile(unittest.TestCase):
     """Test the PDBx/mmCIF file parser"""
- 
+
+    def test_FormatConversion(self):
+        """Test conversion from PDB to PDBx"""
+
+        mol = PDBFile('systems/ala_ala_ala.pdb')
+        with tempfile.TemporaryDirectory() as tempdir:
+            filename = os.path.join(tempdir, 'temp.pdbx')
+            PDBxFile.writeFile(mol.topology, mol.positions, filename, keepIds=True)
+            try:
+                pdbx = PDBxFile(filename)
+            except Exception:
+                self.fail('Parser failed to read PDBx/mmCIF file')
+
+
     def test_Triclinic(self):
         """Test parsing a file that describes a triclinic box."""
         pdb = PDBxFile('systems/triclinic.pdbx')
@@ -58,7 +69,7 @@ class TestPdbxFile(unittest.TestCase):
         parm = AmberPrmtopFile('systems/alanine-dipeptide-implicit.prmtop')
         system = parm.createSystem()
         sim = Simulation(parm.topology, system, VerletIntegrator(1*femtoseconds),
-                         Platform.getPlatformByName('Reference'))
+                         Platform.getPlatform('Reference'))
         sim.context.setPositions(PDBFile('systems/alanine-dipeptide-implicit.pdb').getPositions())
         sim.reporters.append(PDBxReporter('test.cif', 1))
         sim.step(10)
@@ -90,7 +101,7 @@ class TestPdbxFile(unittest.TestCase):
         parm = AmberPrmtopFile('systems/alanine-dipeptide-explicit.prmtop')
         system = parm.createSystem(nonbondedCutoff=1.0, nonbondedMethod=PME)
         sim = Simulation(parm.topology, system, VerletIntegrator(1*femtoseconds),
-                         Platform.getPlatformByName('Reference'))
+                         Platform.getPlatform('Reference'))
         orig_pdb = PDBFile('systems/alanine-dipeptide-explicit.pdb')
         sim.context.setPositions(orig_pdb.getPositions())
         sim.context.setPeriodicBoxVectors(*parm.topology.getPeriodicBoxVectors())
@@ -133,6 +144,43 @@ class TestPdbxFile(unittest.TestCase):
             self.assertEqual(bond1[0].name, bond2[0].name)
             self.assertEqual(bond1[1].name, bond2[1].name)
 
+    def testChemCompBonds(self):
+        """Test creating bonds based on chem_comp_bond records."""
+        pdb = PDBxFile('systems/6mvz.cif')
+
+        def bondCount(res1, atom1, res2, atom2):
+            count = 0
+            for bond in pdb.topology.bonds():
+                if (res1 == bond[0].residue.index and atom1 == bond[0].name) or (res2 == bond[0].residue.index and atom2 == bond[0].name):
+                    if (res1 == bond[1].residue.index and atom1 == bond[1].name) or (res2 == bond[1].residue.index and atom2 == bond[1].name):
+                        count += 1
+            return count
+
+        # Check some bonds that ought to be present.
+
+        self.assertEqual(1, bondCount(0, 'N', 0, 'CA'))
+        self.assertEqual(1, bondCount(0, 'C', 1, 'N'))
+        self.assertEqual(1, bondCount(1, 'CA', 1, 'CB'))
+        self.assertEqual(1, bondCount(1, 'C', 2, 'N'))
+        self.assertEqual(1, bondCount(2, 'CB', 2, 'CG'))
+        self.assertEqual(1, bondCount(2, 'C', 3, 'N'))
+        self.assertEqual(1, bondCount(3, 'C', 3, 'OXT'))
+        self.assertEqual(1, bondCount(4, 'O', 4, 'C1'))
+
+        # Check the types and orders of a few bonds.
+
+        for bond in pdb.topology.bonds():
+            if (bond[0].name == 'C' and bond[1].name == 'O') or (bond[1].name == 'C' and bond[0].name == 'O'):
+                self.assertEqual(topology.Double, bond.type)
+                self.assertEqual(2, bond.order)
+            if (bond[0].name == 'N' or bond[1].name == 'N'):
+                if bond[0].residue == bond[1].residue:
+                    self.assertEqual(topology.Single, bond.type)
+                    self.assertEqual(1, bond.order)
+                else:
+                    self.assertEqual(None, bond.type)
+                    self.assertEqual(None, bond.order)
+
     def testMultiChain(self):
         """Test reading and writing a file that includes multiple chains"""
         cif_ori = PDBxFile('systems/multichain.pdbx')
@@ -148,6 +196,36 @@ class TestPdbxFile(unittest.TestCase):
 
         for chain1, chain2 in zip(cif_ori.topology.chains(), cif_new.topology.chains()):
             self.assertEqual(chain1.id, chain2.id)
+
+    def testInsertionCodes(self):
+        """Test reading a file that uses insertion codes."""
+        pdbx = PDBxFile('systems/insertions.pdbx')
+        residues = list(pdbx.topology.residues())
+        self.assertEqual(7, len(residues))
+        names = ['PHE', 'ASP', 'LYS', 'ILE', 'LYS', 'ASN', 'TRP']
+        ids = ['59', '60', '60', '60', '60', '60', '61']
+        codes = ['', '', 'A', 'B', 'C', 'D', '']
+        for res, name, id, code in zip(residues, names, ids, codes):
+            self.assertEqual(name, res.name)
+            self.assertEqual(id, res.id)
+            self.assertEqual(code, res.insertionCode)
+
+    def testWaterAltLoc(self):
+        """Waters that carry label_alt_id must not be dropped (GH#5521)."""
+        pdbx = PDBxFile('systems/water_altlocs.cif')
+        residues = [(res.name, res.id) for res in pdbx.topology.residues()]
+        self.assertEqual([('GLY', '1'), ('HOH', '101'), ('HOH', '102'), ('HOH', '103')], residues)
+        self.assertEqual(7, len(list(pdbx.topology.atoms())))
+        self.assertVecAlmostEqual(Vec3(0.0, 0.5, 0.0)*nanometers, pdbx.positions[5])
+
+    def testStructConnAuthSeqId(self):
+        """struct_conn must use auth_seq_id when present so bonds match atomKey."""
+        pdbx = PDBxFile('systems/auth_seq_bond.cif')
+        residues = [(res.name, res.id) for res in pdbx.topology.residues()]
+        self.assertEqual([('CYS', '100'), ('CYS', '200')], residues)
+        bonds = [(bond[0].name, bond[0].residue.id, bond[1].name, bond[1].residue.id)
+                 for bond in pdbx.topology.bonds()]
+        self.assertIn(('SG', '100', 'SG', '200'), bonds)
 
 if __name__ == '__main__':
     unittest.main()

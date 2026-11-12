@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2013-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2013-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,6 +30,7 @@
 #include "CpuKernels.h"
 #include "ReferenceAngleBondIxn.h"
 #include "ReferenceBondForce.h"
+#include "ReferenceConstantPotential14.h"
 #include "ReferenceConstraints.h"
 #include "ReferenceKernelFactory.h"
 #include "ReferenceKernels.h"
@@ -43,9 +42,10 @@
 #include "openmm/OpenMMException.h"
 #include "openmm/Vec3.h"
 #include "openmm/internal/ContextImpl.h"
-#include "openmm/internal/CustomNonbondedForceImpl.h"
 #include "openmm/internal/NonbondedForceImpl.h"
+#include "openmm/internal/ConstantPotentialForceImpl.h"
 #include "openmm/internal/vectorize.h"
+#include "openmm/serialization/XmlSerializer.h"
 #include "lepton/CompiledExpression.h"
 #include "lepton/CustomFunction.h"
 #include "lepton/Operation.h"
@@ -58,37 +58,37 @@ using namespace std;
 
 static vector<Vec3>& extractPositions(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->positions);
+    return *data->positions;
 }
 
 static vector<Vec3>& extractVelocities(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->velocities);
+    return *data->velocities;
 }
 
 static vector<Vec3>& extractForces(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((vector<Vec3>*) data->forces);
-}
-
-static Vec3& extractBoxSize(ContextImpl& context) {
-    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *(Vec3*) data->periodicBoxSize;
+    return *data->forces;
 }
 
 static Vec3* extractBoxVectors(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return (Vec3*) data->periodicBoxVectors;
+    return data->periodicBoxVectors;
 }
 
 static ReferenceConstraints& extractConstraints(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *(ReferenceConstraints*) data->constraints;
+    return *data->constraints;
+}
+
+static const ReferenceVirtualSites& extractVirtualSites(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return *data->virtualSites;
 }
 
 static map<string, double>& extractEnergyParameterDerivatives(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
-    return *((map<string, double>*) data->energyParameterDerivatives);
+    return *data->energyParameterDerivatives;
 }
 
 /**
@@ -113,7 +113,7 @@ static double computeShiftedKineticEnergy(ContextImpl& context, vector<double>& 
     int numParticles = context.getSystem().getNumParticles();
     
     // Compute the shifted velocities.
-    
+
     vector<Vec3> shiftedVel(numParticles);
     for (int i = 0; i < numParticles; ++i) {
         if (masses[i] > 0)
@@ -123,11 +123,13 @@ static double computeShiftedKineticEnergy(ContextImpl& context, vector<double>& 
     }
     
     // Apply constraints to them.
-    
-    vector<double> inverseMasses(numParticles);
-    for (int i = 0; i < numParticles; i++)
-        inverseMasses[i] = (masses[i] == 0 ? 0 : 1/masses[i]);
-    extractConstraints(context).applyToVelocities(posData, shiftedVel, inverseMasses, 1e-4);
+
+    if (timeShift != 0) {
+        vector<double> inverseMasses(numParticles);
+        for (int i = 0; i < numParticles; i++)
+            inverseMasses[i] = (masses[i] == 0 ? 0 : 1/masses[i]);
+        extractConstraints(context).applyToVelocities(posData, shiftedVel, inverseMasses, 1e-4);
+    }
     
     // Compute the kinetic energy.
     
@@ -227,11 +229,11 @@ void CpuCalcForcesAndEnergyKernel::beginComputation(ContextImpl& context, bool i
     });
     data.threads.waitForThreads();
     if (!positionsValid)
-        throw OpenMMException("Particle coordinate is nan");
+        throw OpenMMException("Particle coordinate is NaN.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan");
 
     // Determine whether we need to recompute the neighbor list.
         
-    if (data.neighborList != NULL) {
+    if (data.neighborList != NULL && data.cutoff > 0.0) {
         double padding = data.paddedCutoff-data.cutoff;;
         bool needRecompute = false;
         double closeCutoff2 = 0.25*padding*padding;
@@ -302,6 +304,16 @@ double CpuCalcForcesAndEnergyKernel::finishComputation(ContextImpl& context, boo
     return referenceKernel.getAs<ReferenceCalcForcesAndEnergyKernel>().finishComputation(context, includeForce, includeEnergy, groups, valid);
 }
 
+void CpuUpdateStateDataKernel::createCheckpoint(ContextImpl& context, ostream& stream) {
+    ReferenceUpdateStateDataKernel::createCheckpoint(context, stream);
+    data.random.createCheckpoint(stream);
+}
+
+void CpuUpdateStateDataKernel::loadCheckpoint(ContextImpl& context, istream& stream) {
+    ReferenceUpdateStateDataKernel::loadCheckpoint(context, stream);
+    data.random.loadCheckpoint(stream);
+}
+
 void CpuCalcHarmonicAngleForceKernel::initialize(const System& system, const HarmonicAngleForce& force) {
     numAngles = force.getNumAngles();
     angleIndexArray.resize(numAngles, vector<int>(3));
@@ -331,13 +343,13 @@ double CpuCalcHarmonicAngleForceKernel::execute(ContextImpl& context, bool inclu
     return energy;
 }
 
-void CpuCalcHarmonicAngleForceKernel::copyParametersToContext(ContextImpl& context, const HarmonicAngleForce& force) {
+void CpuCalcHarmonicAngleForceKernel::copyParametersToContext(ContextImpl& context, const HarmonicAngleForce& force, int firstAngle, int lastAngle) {
     if (numAngles != force.getNumAngles())
         throw OpenMMException("updateParametersInContext: The number of angles has changed");
 
     // Record the values.
 
-    for (int i = 0; i < numAngles; ++i) {
+    for (int i = firstAngle; i <= lastAngle; ++i) {
         int particle1, particle2, particle3;
         double angle, k;
         force.getAngleParameters(i, particle1, particle2, particle3, angle, k);
@@ -379,13 +391,13 @@ double CpuCalcPeriodicTorsionForceKernel::execute(ContextImpl& context, bool inc
     return energy;
 }
 
-void CpuCalcPeriodicTorsionForceKernel::copyParametersToContext(ContextImpl& context, const PeriodicTorsionForce& force) {
+void CpuCalcPeriodicTorsionForceKernel::copyParametersToContext(ContextImpl& context, const PeriodicTorsionForce& force, int firstTorsion, int lastTorsion) {
     if (numTorsions != force.getNumTorsions())
         throw OpenMMException("updateParametersInContext: The number of torsions has changed");
 
     // Record the values.
 
-    for (int i = 0; i < numTorsions; ++i) {
+    for (int i = firstTorsion; i <= lastTorsion; ++i) {
         int particle1, particle2, particle3, particle4, periodicity;
         double phase, k;
         force.getTorsionParameters(i, particle1, particle2, particle3, particle4, periodicity, phase, k);
@@ -466,22 +478,18 @@ public:
             force[4*i+2] += f[4*i+2];
         }
     }
+    void setChargeDerivatives(float* derivatives) {
+    }
 private:
     float* posq;
     float* force;
     int numParticles;
 };
 
-bool isVec8Supported();
-CpuNonbondedForce* createCpuNonbondedForceVec4();
-CpuNonbondedForce* createCpuNonbondedForceVec8();
+CpuNonbondedForce* createCpuNonbondedForceVec(const CpuNeighborList& neighbors);
 
 CpuCalcNonbondedForceKernel::CpuCalcNonbondedForceKernel(string name, const Platform& platform, CpuPlatform::PlatformData& data) : CalcNonbondedForceKernel(name, platform),
         data(data), hasInitializedPme(false), hasInitializedDispersionPme(false), nonbonded(NULL) {
-    if (isVec8Supported())
-        nonbonded = createCpuNonbondedForceVec8();
-    else
-        nonbonded = createCpuNonbondedForceVec4();
 }
 
 CpuCalcNonbondedForceKernel::~CpuCalcNonbondedForceKernel() {
@@ -490,10 +498,19 @@ CpuCalcNonbondedForceKernel::~CpuCalcNonbondedForceKernel() {
 }
 
 void CpuCalcNonbondedForceKernel::initialize(const System& system, const NonbondedForce& force) {
-    posqIndex = data.requestPosqIndex();
+    chargePosqIndex = data.requestPosqIndex();
+    ljPosqIndex = data.requestPosqIndex();
 
     // Identify which exceptions are 1-4 interactions.
 
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     numParticles = force.getNumParticles();
     exclusions.resize(numParticles);
     vector<int> nb14s;
@@ -503,8 +520,10 @@ void CpuCalcNonbondedForceKernel::initialize(const System& system, const Nonbond
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
         exclusions[particle1].insert(particle2);
         exclusions[particle2].insert(particle1);
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end()) {
+            nb14Index[i] = nb14s.size();
             nb14s.push_back(i);
+        }
     }
 
     // Record the particle parameters.
@@ -564,7 +583,7 @@ void CpuCalcNonbondedForceKernel::initialize(const System& system, const Nonbond
         }
         else
             paramIndex = paramPos-paramNames.begin();
-        exceptionParamOffsets[exception].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
+        exceptionParamOffsets[nb14Index[exception]].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
     }
     paramValues.resize(paramNames.size(), 0.0);
 
@@ -572,8 +591,10 @@ void CpuCalcNonbondedForceKernel::initialize(const System& system, const Nonbond
     
     nonbondedMethod = CalcNonbondedForceKernel::NonbondedMethod(force.getNonbondedMethod());
     nonbondedCutoff = force.getCutoffDistance();
-    if (nonbondedMethod == NoCutoff)
+    if (nonbondedMethod == NoCutoff) {
+        data.requestNeighborList(0.0, 0.0, true, exclusions);
         useSwitchingFunction = false;
+    }
     else {
         data.requestNeighborList(nonbondedCutoff, 0.25*nonbondedCutoff, true, exclusions);
         useSwitchingFunction = force.getUseSwitchingFunction();
@@ -597,12 +618,17 @@ void CpuCalcNonbondedForceKernel::initialize(const System& system, const Nonbond
         ewaldDispersionAlpha = alpha;
         useSwitchingFunction = false;
     }
+    if (nonbondedMethod == NoCutoff || nonbondedMethod == CutoffNonPeriodic)
+        exceptionsArePeriodic = false;
+    else
+        exceptionsArePeriodic = force.getExceptionsUsePeriodicBoundaryConditions();
     rfDielectric = force.getReactionFieldDielectric();
     if (force.getUseDispersionCorrection())
         dispersionCoefficient = NonbondedForceImpl::calcDispersionCorrection(system, force);
     else
         dispersionCoefficient = 0.0;
-    data.isPeriodic = (nonbondedMethod == CutoffPeriodic || nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME);
+    data.isPeriodic |= (nonbondedMethod == CutoffPeriodic || nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME);
+    nonbonded = createCpuNonbondedForceVec(*data.neighborList);
 }
 
 double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy, bool includeDirect, bool includeReciprocal) {
@@ -618,7 +644,7 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
             useOptimizedPme = getPlatform().supportsKernels(kernelNames);
             if (useOptimizedPme) {
                 optimizedPme = getPlatform().createKernel(CalcPmeReciprocalForceKernel::Name(), context);
-                optimizedPme.getAs<CalcPmeReciprocalForceKernel>().initialize(gridSize[0], gridSize[1], gridSize[2], numParticles, ewaldAlpha, data.deterministicForces);
+                optimizedPme.getAs<CalcPmeReciprocalForceKernel>().initialize(gridSize[0], gridSize[1], gridSize[2], numParticles, {}, ewaldAlpha, data.deterministicForces);
             }
         }
         if (nonbondedMethod == LJPME) {
@@ -626,10 +652,11 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
 
             vector<string> kernelNames;
             kernelNames.push_back("CalcPmeReciprocalForce");
+            kernelNames.push_back("CalcDispersionPmeReciprocalForce");
             useOptimizedPme = getPlatform().supportsKernels(kernelNames);
             if (useOptimizedPme) {
                 optimizedPme = getPlatform().createKernel(CalcPmeReciprocalForceKernel::Name(), context);
-                optimizedPme.getAs<CalcPmeReciprocalForceKernel>().initialize(gridSize[0], gridSize[1], gridSize[2], numParticles, ewaldAlpha, data.deterministicForces);
+                optimizedPme.getAs<CalcPmeReciprocalForceKernel>().initialize(gridSize[0], gridSize[1], gridSize[2], numParticles, {}, ewaldAlpha, data.deterministicForces);
                 optimizedDispersionPme = getPlatform().createKernel(CalcDispersionPmeReciprocalForceKernel::Name(), context);
                 optimizedDispersionPme.getAs<CalcDispersionPmeReciprocalForceKernel>().initialize(dispersionGridSize[0], dispersionGridSize[1],
                                                                                                   dispersionGridSize[2], numParticles, ewaldDispersionAlpha, data.deterministicForces);
@@ -637,7 +664,7 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
         }
     }
     computeParameters(context, true);
-    copyChargesToPosq(context, charges, posqIndex);
+    copyChargesToPosq(context, charges, chargePosqIndex);
     AlignedArray<float>& posq = data.posq;
     vector<Vec3>& posData = extractPositions(context);
     vector<Vec3>& forceData = extractForces(context);
@@ -647,13 +674,14 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
     bool pme  = (nonbondedMethod == PME);
     bool ljpme = (nonbondedMethod == LJPME);
     if (nonbondedMethod != NoCutoff)
-        nonbonded->setUseCutoff(nonbondedCutoff, *data.neighborList, rfDielectric);
+        nonbonded->setUseCutoff(nonbondedCutoff, rfDielectric);
     if (data.isPeriodic) {
         Vec3* boxVectors = extractBoxVectors(context);
         double minAllowedSize = 1.999999*nonbondedCutoff;
         if (boxVectors[0][0] < minAllowedSize || boxVectors[1][1] < minAllowedSize || boxVectors[2][2] < minAllowedSize)
             throw OpenMMException("The periodic box size has decreased to less than twice the nonbonded cutoff.");
         nonbonded->setPeriodic(boxVectors);
+        nonbonded->setPeriodicExceptions(exceptionsArePeriodic);
     }
     if (ewald)
         nonbonded->setUseEwald(ewaldAlpha, kmax[0], kmax[1], kmax[2]);
@@ -672,15 +700,30 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
         if (useOptimizedPme) {
             PmeIO io(&posq[0], &data.threadForce[0][0], numParticles);
             Vec3 periodicBoxVectors[3] = {boxVectors[0], boxVectors[1], boxVectors[2]};
-            optimizedPme.getAs<CalcPmeReciprocalForceKernel>().beginComputation(io, periodicBoxVectors, includeEnergy);
+            optimizedPme.getAs<CalcPmeReciprocalForceKernel>().beginComputation(io, periodicBoxVectors, includeEnergy, true, false);
             nonbondedEnergy += optimizedPme.getAs<CalcPmeReciprocalForceKernel>().finishComputation(io);
+            if (nonbondedMethod == LJPME) {
+                copyChargesToPosq(context, C6params, ljPosqIndex);
+                optimizedDispersionPme.getAs<CalcDispersionPmeReciprocalForceKernel>().beginComputation(io, periodicBoxVectors, includeEnergy);
+                nonbondedEnergy += optimizedDispersionPme.getAs<CalcDispersionPmeReciprocalForceKernel>().finishComputation(io);
+            }
         }
         else
             nonbonded->calculateReciprocalIxn(numParticles, &posq[0], posData, particleParams, C6params, exclusions, forceData, includeEnergy ? &nonbondedEnergy : NULL);
+        if (ewald || pme || ljpme) {
+            // Add the correction for the neutralizing plasma.
+
+            double volume = boxVectors[0][0]*boxVectors[1][1]*boxVectors[2][2];
+            energy -= totalCharge*totalCharge/(8*EPSILON0*volume*ewaldAlpha*ewaldAlpha);
+        }
     }
     energy += nonbondedEnergy;
     if (includeDirect) {
         ReferenceLJCoulomb14 nonbonded14;
+        if (exceptionsArePeriodic) {
+            Vec3* boxVectors = extractBoxVectors(context);
+            nonbonded14.setPeriodic(boxVectors);
+        }
         bondForce.calculateForce(posData, bonded14ParamArray, forceData, includeEnergy ? &energy : NULL, nonbonded14);
         if (data.isPeriodic && nonbondedMethod != LJPME)
             energy += dispersionCoefficient/(boxVectors[0][0]*boxVectors[1][1]*boxVectors[2][2]);
@@ -688,15 +731,30 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
     return energy;
 }
 
-void CpuCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const NonbondedForce& force) {
+void CpuCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const NonbondedForce& force, int firstParticle, int lastParticle, int firstException, int lastException) {
     if (force.getNumParticles() != numParticles)
         throw OpenMMException("updateParametersInContext: The number of particles has changed");
+
+    // Identify which exceptions are 1-4 interactions.
+
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     vector<int> nb14s;
     for (int i = 0; i < force.getNumExceptions(); i++) {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (nb14Index.find(i) == nb14Index.end()) {
+            if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end())
+                throw OpenMMException("updateParametersInContext: The set of non-excluded exceptions has changed");
+        }
+        else
             nb14s.push_back(i);
     }
     if (nb14s.size() != num14)
@@ -704,14 +762,39 @@ void CpuCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, 
 
     // Record the values.
 
-    posqIndex = data.requestPosqIndex();
-    for (int i = 0; i < numParticles; ++i)
+    for (int i = firstParticle; i <= lastParticle; ++i)
        force.getParticleParameters(i, baseParticleParams[i][0], baseParticleParams[i][1], baseParticleParams[i][2]);
     for (int i = 0; i < num14; ++i) {
         int particle1, particle2;
         force.getExceptionParameters(nb14s[i], particle1, particle2, baseExceptionParams[i][0], baseExceptionParams[i][1], baseExceptionParams[i][2]);
         bonded14IndexArray[i][0] = particle1;
         bonded14IndexArray[i][1] = particle2;
+    }
+    particleParamOffsets.clear();
+    exceptionParamOffsets.clear();
+    particleParamOffsets.resize(force.getNumParticles());
+    exceptionParamOffsets.resize(force.getNumExceptions());
+    for (int i = 0; i < force.getNumParticleParameterOffsets(); i++) {
+        string param;
+        int particle;
+        double charge, sigma, epsilon;
+        force.getParticleParameterOffset(i, param, particle, charge, sigma, epsilon);
+        auto paramPos = find(paramNames.begin(), paramNames.end(), param);
+        if (paramPos == paramNames.end())
+            throw OpenMMException("updateParametersInContext: The parameter of a particle parameter offset has changed");
+        int paramIndex = paramPos-paramNames.begin();
+        particleParamOffsets[particle].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
+    }
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        auto paramPos = find(paramNames.begin(), paramNames.end(), param);
+        if (paramPos == paramNames.end())
+            throw OpenMMException("updateParametersInContext: The parameter of an exception parameter offset has changed");
+        int paramIndex = paramPos-paramNames.begin();
+        exceptionParamOffsets[nb14Index[exception]].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
     }
     computeParameters(context, false);
     
@@ -764,6 +847,7 @@ void CpuCalcNonbondedForceKernel::computeParameters(ContextImpl& context, bool o
 
     if (hasParticleOffsets || !offsetsOnly) {
         double sumSquaredCharges = 0.0;
+        totalCharge = 0.0;
         for (int i = 0; i < numParticles; i++) {
             double charge = baseParticleParams[i][0];
             double sigma = baseParticleParams[i][1];
@@ -778,6 +862,7 @@ void CpuCalcNonbondedForceKernel::computeParameters(ContextImpl& context, bool o
             particleParams[i] = make_pair((float) (0.5*sigma), (float) (2.0*sqrt(epsilon)));
             C6params[i] = 8.0*pow(particleParams[i].first, 3.0) * particleParams[i].second;
             sumSquaredCharges += charge*charge;
+            totalCharge += charge;
         }
         if (nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME) {
             ewaldSelfEnergy = -ONE_4PI_EPS0*ewaldAlpha*sumSquaredCharges/sqrt(M_PI);
@@ -787,6 +872,8 @@ void CpuCalcNonbondedForceKernel::computeParameters(ContextImpl& context, bool o
         }
         else
             ewaldSelfEnergy = 0.0;
+        chargePosqIndex = data.requestPosqIndex();
+        ljPosqIndex = data.requestPosqIndex();
     }
 
     // Compute exception parameters.
@@ -809,15 +896,301 @@ void CpuCalcNonbondedForceKernel::computeParameters(ContextImpl& context, bool o
     }
 }
 
+CpuConstantPotentialForce* createCpuConstantPotentialForceVec();
+
+CpuCalcConstantPotentialForceKernel::CpuCalcConstantPotentialForceKernel(string name, const Platform& platform, CpuPlatform::PlatformData& data) : CalcConstantPotentialForceKernel(name, platform),
+    data(data), hasInitializedPme(false), constantPotential(NULL), solver(NULL) {
+}
+
+CpuCalcConstantPotentialForceKernel::~CpuCalcConstantPotentialForceKernel() {
+    if (constantPotential != NULL) {
+        delete constantPotential;
+    }
+    if (solver != NULL) {
+        delete solver;
+    }
+}
+
+void CpuCalcConstantPotentialForceKernel::initialize(const System& system, const ConstantPotentialForce& force) {
+    chargePosqIndex = data.requestPosqIndex();
+
+    // Get particle parameters.
+    numParticles = force.getNumParticles();
+    setCharges.resize(numParticles);
+    for (int i = 0; i < numParticles; i++) {
+        force.getParticleParameters(i, setCharges[i]);
+    }
+
+    // Get "1-4" exceptions (those that don't zero the charge product).
+    exclusions.resize(numParticles);
+    vector<int> nb14s;
+    for (int i = 0; i < force.getNumExceptions(); i++) {
+        int particle1, particle2;
+        double chargeProd;
+        force.getExceptionParameters(i, particle1, particle2, chargeProd);
+        exclusions[particle1].insert(particle2);
+        exclusions[particle2].insert(particle1);
+        if (chargeProd != 0.0) {
+            nb14Index[i] = nb14s.size();
+            nb14s.push_back(i);
+        }
+    }
+
+    // Get exception parameters.
+    num14 = nb14s.size();
+    bonded14ParamArray.resize(num14, vector<double>(1));
+    bonded14IndexArray.resize(num14, vector<int>(2));
+    for (int i = 0; i < num14; ++i) {
+        int particle1, particle2;
+        force.getExceptionParameters(nb14s[i], particle1, particle2, bonded14ParamArray[i][0]);
+        bonded14IndexArray[i][0] = particle1;
+        bonded14IndexArray[i][1] = particle2;
+    }
+    bondForce.initialize(numParticles, num14, 2, bonded14IndexArray, data.threads);
+
+    // Get electrode parameters.  sysToElec will be a map from system particle
+    // indices to electrode particle indices (or -1 if the particle is not an
+    // electrode particle), while elecToSys will be a map from electrode
+    // particle indices to system particle indices.  sysElec will be a map from
+    // system particle indices to electrode indices (or -1 if the particle is
+    // not an electrode particle), while elecElec will be a map from electrode
+    // particle indices to electrode indices.
+    sysToElec.resize(numParticles, -1);
+    sysElec.resize(numParticles, -1);
+    electrodeParams.resize(force.getNumElectrodes());
+    for (int ie = 0; ie < force.getNumElectrodes(); ie++) {
+        std::set<int> electrodeParticles;
+        double potential;
+        double gaussianWidth;
+        double thomasFermiScale;
+        force.getElectrodeParameters(ie, electrodeParticles, potential, gaussianWidth, thomasFermiScale);
+        for (int i : electrodeParticles) {
+            sysToElec[i] = elecToSys.size();
+            sysElec[i] = ie;
+            elecToSys.push_back(i);
+            elecElec.push_back(ie);
+        }
+        electrodeParams[ie] = {potential, gaussianWidth, thomasFermiScale};
+    }
+
+    // Clear charges on electrode particles.
+    numElectrodeParticles = elecToSys.size();
+    for (int ii = 0; ii < numElectrodeParticles; ii++) {
+        setCharges[elecToSys[ii]] = 0.0;
+    }
+
+    // Initialize single-precision charge vector with initial guesses.
+    charges.resize(numParticles);
+    for (int i = 0; i < numParticles; i++) {
+        charges[i] = (float) setCharges[i];
+    }
+
+    // Set options from force.
+    nonbondedCutoff = force.getCutoffDistance();
+    data.requestNeighborList(nonbondedCutoff, 0.25 * nonbondedCutoff, true, exclusions);
+    ConstantPotentialForceImpl::calcPMEParameters(system, force, ewaldAlpha, gridSize[0], gridSize[1], gridSize[2]);
+    exceptionsArePeriodic = force.getExceptionsUsePeriodicBoundaryConditions();
+    cgErrorTol = force.getCGErrorTolerance();
+    useChargeConstraint = force.getUseChargeConstraint();
+    chargeTarget = force.getChargeConstraintTarget();
+    force.getExternalField(externalField);
+    data.isPeriodic = true;
+
+    // Set the charge target to be that on the electrode particles (so that the
+    // overall charge is constrained correctly if the non-electrolyte particles
+    // are non-neutral).
+    for (int i = 0; i < numParticles; i++) {
+        if (sysElec[i] == -1) {
+            chargeTarget -= setCharges[i];
+        }
+    }
+
+    // Set up constant potential.
+    ConstantPotentialForce::ConstantPotentialMethod method = force.getConstantPotentialMethod();
+    if (method == ConstantPotentialForce::Matrix) {
+        solver = new CpuConstantPotentialMatrixSolver(numParticles, numElectrodeParticles);
+    }
+    else if (method == ConstantPotentialForce::CG) {
+        solver = new CpuConstantPotentialCGSolver(numParticles, numElectrodeParticles, force.getUsePreconditioner());
+    }
+    else {
+        throw OpenMMException("internal error: invalid constant potential method");
+    }
+
+    constantPotential = createCpuConstantPotentialForceVec();
+    float externalFieldArray[3] = { (float) externalField[0], (float) externalField[1], (float) externalField[2] };
+    constantPotential->initialize(numParticles, numElectrodeParticles, chargePosqIndex, (float) nonbondedCutoff, (float) ewaldAlpha, (float) cgErrorTol,
+        gridSize, exceptionsArePeriodic, useChargeConstraint, *data.neighborList, solver, exclusions, sysToElec, elecToSys, sysElec, elecElec, electrodeParams, (float) chargeTarget, externalFieldArray);
+}
+
+double CpuCalcConstantPotentialForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
+    Vec3* boxVectors = extractBoxVectors(context);
+    vector<Vec3>& posData = extractPositions(context);
+    vector<Vec3>& forceData = extractForces(context);
+    double energy = 0.0;
+
+    checkBoxSize(boxVectors);
+    ensurePmeInitialized(context);
+    copyChargesToPosq(context, charges, chargePosqIndex);
+
+    constantPotential->execute(boxVectors, posData, charges, &data.posq[0], data.threadForce, includeEnergy ? &energy : NULL, data.threads, pmeKernel);
+
+    // Process non-zeroing exceptions.  Since exceptions and electrodes should
+    // involve disjoint sets of atoms, this isn't required for the energy
+    // minimization with respect to the electrode atom charges.
+    ReferenceConstantPotential14 conp14;
+    if (exceptionsArePeriodic) {
+        conp14.setPeriodic(boxVectors);
+    }
+    bondForce.calculateForce(posData, bonded14ParamArray, forceData, includeEnergy ? &energy : NULL, conp14);
+
+    return energy;
+}
+
+void CpuCalcConstantPotentialForceKernel::copyParametersToContext(ContextImpl& context, const ConstantPotentialForce& force, int firstParticle, int lastParticle, int firstException, int lastException, int firstElectrode, int lastElectrode) {
+    // Get particle parameters.
+    if (force.getNumParticles() != numParticles) {
+        throw OpenMMException("updateParametersInContext: The number of particles has changed");
+    }
+    for (int i = firstParticle; i <= lastParticle; i++) {
+        // Only update charges on non-electrode particles; keep current guesses
+        // for electrode particles.
+        if (sysElec[i] == -1) {
+            force.getParticleParameters(i, setCharges[i]);
+            charges[i] = (float) setCharges[i];
+        }
+    }
+    if (firstParticle <= lastParticle) {
+        // Signal that charges in posq need to be updated.
+        chargePosqIndex = data.requestPosqIndex();
+    }
+
+    // Get "1-4" (non-zeroing) exceptions.
+    vector<int> nb14s;
+    for (int i = 0; i < force.getNumExceptions(); i++) {
+        int particle1, particle2;
+        double chargeProd;
+        force.getExceptionParameters(i, particle1, particle2, chargeProd);
+        if (nb14Index.find(i) == nb14Index.end()) {
+            if (chargeProd != 0.0) {
+                throw OpenMMException("updateParametersInContext: The set of non-excluded exceptions has changed");
+            }
+        }
+        else {
+            nb14s.push_back(i);
+        }
+    }
+    if (nb14s.size() != num14) {
+        throw OpenMMException("updateParametersInContext: The number of non-excluded exceptions has changed");
+    }
+
+    // Get exception parameters.
+    for (int i = 0; i < num14; i++) {
+        int particle1, particle2;
+        force.getExceptionParameters(nb14s[i], particle1, particle2, bonded14ParamArray[i][0]);
+        bonded14IndexArray[i][0] = particle1;
+        bonded14IndexArray[i][1] = particle2;
+    }
+
+    // Get electrode parameters.
+    std::set<int> allElectrodeParticles;
+    for (int ie = 0; ie < force.getNumElectrodes(); ie++) {
+        std::set<int> electrodeParticles;
+        double potential;
+        double gaussianWidth;
+        double thomasFermiScale;
+        force.getElectrodeParameters(ie, electrodeParticles, potential, gaussianWidth, thomasFermiScale);
+        for (int i : electrodeParticles) {
+            if (sysElec[i] != ie) {
+                throw OpenMMException("updateParametersInContext: The electrode assignment of a particle has changed");
+            }
+            allElectrodeParticles.insert(i);
+        }
+        electrodeParams[ie][0] = potential;
+        electrodeParams[ie][1] = gaussianWidth;
+        electrodeParams[ie][2] = thomasFermiScale;
+    }
+    if (allElectrodeParticles.size() != numElectrodeParticles) {
+        throw OpenMMException("updateParametersInContext: The electrode state of a particle has changed");
+    }
+
+    // Update external field.
+    force.getExternalField(externalField);
+
+    // Update charge target.
+    chargeTarget = force.getChargeConstraintTarget();
+    for (int i = 0; i < numParticles; i++) {
+        if (sysElec[i] == -1) {
+            chargeTarget -= setCharges[i];
+        }
+    }
+
+    float externalFieldArray[3] = { (float) externalField[0], (float) externalField[1], (float) externalField[2] };
+    constantPotential->update((float) chargeTarget, externalFieldArray, firstElectrode, lastElectrode);
+}
+
+void CpuCalcConstantPotentialForceKernel::getPMEParameters(double& alpha, int& nx, int& ny, int& nz) const {
+    if (hasInitializedPme) {
+        pmeKernel.getAs<const CalcPmeReciprocalForceKernel>().getPMEParameters(alpha, nx, ny, nz);
+    } else {
+        alpha = ewaldAlpha;
+        nx = gridSize[0];
+        ny = gridSize[1];
+        nz = gridSize[2];
+    }
+}
+
+void CpuCalcConstantPotentialForceKernel::getCharges(ContextImpl& context, std::vector<double>& chargesOut) {
+    // Make sure that positions in posq, and the current neighbor list, are up
+    // to date, but don't compute any energies or forces, and exclude all force
+    // groups so that no kernels will get executed.
+    context.calcForcesAndEnergy(false, false, 0);
+
+    Vec3* boxVectors = extractBoxVectors(context);
+    vector<Vec3>& posData = extractPositions(context);
+
+    checkBoxSize(boxVectors);
+    ensurePmeInitialized(context);
+    copyChargesToPosq(context, charges, chargePosqIndex);
+
+    constantPotential->getCharges(boxVectors, posData, charges, &data.posq[0], data.threadForce, data.threads, pmeKernel);
+
+    // Preserve fixed charges exactly (without single-precision rounding) and
+    // load solved values of fluctuating charges.
+    chargesOut = setCharges;
+    for (int ii = 0; ii < numElectrodeParticles; ii++) {
+        int i = elecToSys[ii];
+        chargesOut[i] = (double) charges[i];
+    }
+}
+
+void CpuCalcConstantPotentialForceKernel::checkBoxSize(const Vec3* boxVectors) {
+    double minAllowedSize = 1.999999*nonbondedCutoff;
+    if (boxVectors[0][0] < minAllowedSize || boxVectors[1][1] < minAllowedSize || boxVectors[2][2] < minAllowedSize) {
+        throw OpenMMException("The periodic box size has decreased to less than twice the nonbonded cutoff.");
+    }
+}
+
+void CpuCalcConstantPotentialForceKernel::ensurePmeInitialized(ContextImpl& context) {
+    if (!hasInitializedPme) {
+        vector<string> kernelNames;
+        kernelNames.push_back("CalcPmeReciprocalForce");
+        if (!getPlatform().supportsKernels(kernelNames)) {
+            throw OpenMMException("ConstantPotentialForce unsupported on CPU platform without PME kernel");
+        }
+        pmeKernel = getPlatform().createKernel(CalcPmeReciprocalForceKernel::Name(), context);
+        pmeKernel.getAs<CalcPmeReciprocalForceKernel>().initialize(gridSize[0], gridSize[1], gridSize[2], numParticles, elecToSys, ewaldAlpha, data.deterministicForces);
+        hasInitializedPme = true;
+    }
+}
+
 CpuCalcCustomNonbondedForceKernel::CpuCalcCustomNonbondedForceKernel(string name, const Platform& platform, CpuPlatform::PlatformData& data) :
-            CalcCustomNonbondedForceKernel(name, platform), data(data), forceCopy(NULL), nonbonded(NULL) {
+            CalcCustomNonbondedForceKernel(name, platform), data(data), nonbonded(NULL) {
 }
 
 CpuCalcCustomNonbondedForceKernel::~CpuCalcCustomNonbondedForceKernel() {
     if (nonbonded != NULL)
         delete nonbonded;
-    if (forceCopy != NULL)
-        delete forceCopy;
 }
 
 void CpuCalcCustomNonbondedForceKernel::initialize(const System& system, const CustomNonbondedForce& force) {
@@ -835,77 +1208,114 @@ void CpuCalcCustomNonbondedForceKernel::initialize(const System& system, const C
 
     // Build the arrays.
 
-    int numParameters = force.getNumPerParticleParameters();
     particleParamArray.resize(numParticles);
     for (int i = 0; i < numParticles; ++i)
         force.getParticleParameters(i, particleParamArray[i]);
     nonbondedMethod = CalcCustomNonbondedForceKernel::NonbondedMethod(force.getNonbondedMethod());
     nonbondedCutoff = force.getCutoffDistance();
-    if (nonbondedMethod == NoCutoff)
+    if (nonbondedMethod == NoCutoff) {
+        data.requestNeighborList(0.0, 0.0, true, exclusions);
         useSwitchingFunction = false;
+    }
     else {
         data.requestNeighborList(nonbondedCutoff, 0.25*nonbondedCutoff, true, exclusions);
         useSwitchingFunction = force.getUseSwitchingFunction();
         switchingDistance = force.getSwitchingDistance();
     }
 
-    // Create custom functions for the tabulated functions.
+    // Record the tabulated function update counts for future reference.
 
-    map<string, Lepton::CustomFunction*> functions;
-    for (int i = 0; i < force.getNumFunctions(); i++)
-        functions[force.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(force.getTabulatedFunction(i));
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
+        tabulatedFunctionUpdateCount[force.getTabulatedFunctionName(i)] = force.getTabulatedFunction(i).getUpdateCount();
 
-    // Parse the various expressions used to calculate the force.
-
-    Lepton::ParsedExpression expression = Lepton::Parser::parse(force.getEnergyFunction(), functions).optimize();
-    Lepton::CompiledExpression energyExpression = expression.createCompiledExpression();
-    Lepton::CompiledExpression forceExpression = expression.differentiate("r").createCompiledExpression();
-    for (int i = 0; i < numParameters; i++)
-        parameterNames.push_back(force.getPerParticleParameterName(i));
-    for (int i = 0; i < force.getNumGlobalParameters(); i++) {
-        globalParameterNames.push_back(force.getGlobalParameterName(i));
-        globalParamValues[force.getGlobalParameterName(i)] = force.getGlobalParameterDefaultValue(i);
-    }
-    std::vector<Lepton::CompiledExpression> energyParamDerivExpressions;
-    for (int i = 0; i < force.getNumEnergyParameterDerivatives(); i++) {
-        string param = force.getEnergyParameterDerivativeName(i);
-        energyParamDerivNames.push_back(param);
-        energyParamDerivExpressions.push_back(expression.differentiate(param).createCompiledExpression());
-    }
-    set<string> variables;
-    variables.insert("r");
-    for (int i = 0; i < numParameters; i++) {
-        variables.insert(parameterNames[i]+"1");
-        variables.insert(parameterNames[i]+"2");
-    }
-    variables.insert(globalParameterNames.begin(), globalParameterNames.end());
-    validateVariables(expression.getRootNode(), variables);
-
-    // Delete the custom functions.
-
-    for (auto& function : functions)
-        delete function.second;
-    
     // Record information for the long range correction.
-    
-    if (force.getNonbondedMethod() == CustomNonbondedForce::CutoffPeriodic && force.getUseLongRangeCorrection()) {
-        forceCopy = new CustomNonbondedForce(force);
+
+    useLongRangeCorrection = (force.getNonbondedMethod() == CustomNonbondedForce::CutoffPeriodic && force.getUseLongRangeCorrection());
+    if (useLongRangeCorrection) {
+        longRangeCorrectionData = CustomNonbondedForceImpl::prepareLongRangeCorrection(force, data.threads.getNumThreads());
         hasInitializedLongRangeCorrection = false;
     }
     else {
         longRangeCoefficient = 0.0;
         hasInitializedLongRangeCorrection = true;
     }
-    
+
     // Record the interaction groups.
-    
+
     for (int i = 0; i < force.getNumInteractionGroups(); i++) {
         set<int> set1, set2;
         force.getInteractionGroupParameters(i, set1, set2);
         interactionGroups.push_back(make_pair(set1, set2));
     }
-    data.isPeriodic = (nonbondedMethod == CutoffPeriodic);
-    nonbonded = new CpuCustomNonbondedForce(energyExpression, forceExpression, parameterNames, exclusions, energyParamDerivExpressions, data.threads);
+    data.isPeriodic |= (nonbondedMethod == CutoffPeriodic);
+
+    // Create the interaction.
+
+    createInteraction(force);
+}
+
+void CpuCalcCustomNonbondedForceKernel::createInteraction(const CustomNonbondedForce& force) {
+    parameterNames.clear();
+    globalParameterNames.clear();
+    computedValueNames.clear();
+    energyParamDerivNames.clear();
+
+    // Create custom functions for the tabulated functions.
+
+    map<string, Lepton::CustomFunction*> functions;
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
+        functions[force.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(force.getTabulatedFunction(i));
+
+    // Parse the various expressions used to calculate the force.
+
+    Lepton::ParsedExpression energyExpression = Lepton::Parser::parse(force.getEnergyFunction(), functions).optimize();
+    Lepton::ParsedExpression forceExpression = energyExpression.differentiate("r");
+    for (int i = 0; i < force.getNumPerParticleParameters(); i++)
+        parameterNames.push_back(force.getPerParticleParameterName(i));
+    for (int i = 0; i < force.getNumGlobalParameters(); i++) {
+        globalParameterNames.push_back(force.getGlobalParameterName(i));
+        globalParamValues[force.getGlobalParameterName(i)] = force.getGlobalParameterDefaultValue(i);
+    }
+    set<string> particleVariables, pairVariables;
+    particleVariables.insert("r");
+    pairVariables.insert("r");
+    for (auto& name : parameterNames) {
+        particleVariables.insert(name);
+        pairVariables.insert(name+"1");
+        pairVariables.insert(name+"2");
+    }
+    particleVariables.insert(globalParameterNames.begin(), globalParameterNames.end());
+    pairVariables.insert(globalParameterNames.begin(), globalParameterNames.end());
+    vector<Lepton::ParsedExpression> computedValueExpressions, energyParamDerivExpressions;
+    for (int i = 0; i < force.getNumComputedValues(); i++) {
+        string name, exp;
+        force.getComputedValueParameters(i, name, exp);
+        Lepton::ParsedExpression parsed = Lepton::Parser::parse(exp, functions);
+        validateVariables(parsed.getRootNode(), particleVariables);
+        computedValueNames.push_back(name);
+        computedValueExpressions.push_back(parsed);
+    }
+    for (int i = 0; i < force.getNumEnergyParameterDerivatives(); i++) {
+        string param = force.getEnergyParameterDerivativeName(i);
+        energyParamDerivNames.push_back(param);
+        energyParamDerivExpressions.push_back(energyExpression.differentiate(param));
+    }
+    for (auto& name : computedValueNames) {
+        pairVariables.insert(name+"1");
+        pairVariables.insert(name+"2");
+    }
+    validateVariables(energyExpression.getRootNode(), pairVariables);
+
+    // Delete the custom functions.
+
+    for (auto& function : functions)
+        delete function.second;
+
+    // Create the object that computes the interaction.
+
+    nonbonded = createCpuCustomNonbondedForce(data.threads, *data.neighborList);
+    nonbonded->initialize(energyExpression, forceExpression, parameterNames, exclusions, energyParamDerivExpressions,
+            computedValueNames, computedValueExpressions);
     if (interactionGroups.size() > 0)
         nonbonded->setInteractionGroups(interactionGroups);
 }
@@ -917,18 +1327,18 @@ double CpuCalcCustomNonbondedForceKernel::execute(ContextImpl& context, bool inc
     double energy = 0;
     bool periodic = (nonbondedMethod == CutoffPeriodic);
     if (nonbondedMethod != NoCutoff)
-        nonbonded->setUseCutoff(nonbondedCutoff, *data.neighborList);
+        nonbonded->setUseCutoff(nonbondedCutoff);
     if (periodic) {
         double minAllowedSize = 2*nonbondedCutoff;
         if (boxVectors[0][0] < minAllowedSize || boxVectors[1][1] < minAllowedSize || boxVectors[2][2] < minAllowedSize)
             throw OpenMMException("The periodic box size has decreased to less than twice the nonbonded cutoff.");
         nonbonded->setPeriodic(boxVectors);
     }
-    bool globalParamsChanged = false;
+    bool recomputeLongRangeCorrection = !hasInitializedLongRangeCorrection;
     for (auto& name : globalParameterNames) {
         double value = context.getParameter(name);
         if (globalParamValues[name] != value)
-            globalParamsChanged = true;
+            recomputeLongRangeCorrection = true;
         globalParamValues[name] = value;
     }
     if (useSwitchingFunction)
@@ -941,8 +1351,8 @@ double CpuCalcCustomNonbondedForceKernel::execute(ContextImpl& context, bool inc
     
     // Add in the long range correction.
     
-    if (!hasInitializedLongRangeCorrection || (globalParamsChanged && forceCopy != NULL)) {
-        CustomNonbondedForceImpl::calcLongRangeCorrection(*forceCopy, context.getOwner(), longRangeCoefficient, longRangeCoefficientDerivs);
+    if (recomputeLongRangeCorrection && useLongRangeCorrection) {
+        CustomNonbondedForceImpl::calcLongRangeCorrection(longRangeCorrectionData, context.getOwner(), longRangeCoefficient, longRangeCoefficientDerivs, data.threads);
         hasInitializedLongRangeCorrection = true;
     }
     double volume = boxVectors[0][0]*boxVectors[1][1]*boxVectors[2][2];
@@ -952,16 +1362,15 @@ double CpuCalcCustomNonbondedForceKernel::execute(ContextImpl& context, bool inc
     return energy;
 }
 
-void CpuCalcCustomNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const CustomNonbondedForce& force) {
+void CpuCalcCustomNonbondedForceKernel::copyParametersToContext(ContextImpl& context, const CustomNonbondedForce& force, int firstParticle, int lastParticle) {
     if (numParticles != force.getNumParticles())
         throw OpenMMException("updateParametersInContext: The number of particles has changed");
 
     // Record the values.
 
     int numParameters = force.getNumPerParticleParameters();
-    vector<double> params;
-    for (int i = 0; i < numParticles; ++i) {
-        vector<double> parameters;
+    vector<double> parameters;
+    for (int i = firstParticle; i <= lastParticle; ++i) {
         force.getParticleParameters(i, parameters);
         for (int j = 0; j < numParameters; j++)
             particleParamArray[i][j] = parameters[j];
@@ -969,10 +1378,26 @@ void CpuCalcCustomNonbondedForceKernel::copyParametersToContext(ContextImpl& con
     
     // If necessary, recompute the long range correction.
     
-    if (forceCopy != NULL) {
-        CustomNonbondedForceImpl::calcLongRangeCorrection(force, context.getOwner(), longRangeCoefficient, longRangeCoefficientDerivs);
+    if (useLongRangeCorrection) {
+        longRangeCorrectionData = CustomNonbondedForceImpl::prepareLongRangeCorrection(force, data.threads.getNumThreads());
+        CustomNonbondedForceImpl::calcLongRangeCorrection(longRangeCorrectionData, context.getOwner(), longRangeCoefficient, longRangeCoefficientDerivs, data.threads);
         hasInitializedLongRangeCorrection = true;
-        *forceCopy = force;
+    }
+
+    // See if any tabulated functions have changed.
+
+    bool changed = false;
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++) {
+        string name = force.getTabulatedFunctionName(i);
+        if (force.getTabulatedFunction(i).getUpdateCount() != tabulatedFunctionUpdateCount[name]) {
+            tabulatedFunctionUpdateCount[name] = force.getTabulatedFunction(i).getUpdateCount();
+            changed = true;
+        }
+    }
+    if (changed) {
+        delete nonbonded;
+        nonbonded = NULL;
+        createInteraction(force);
     }
 }
 
@@ -997,16 +1422,13 @@ void CpuCalcGBSAOBCForceKernel::initialize(const System& system, const GBSAOBCFo
     obc.setSurfaceAreaEnergy((float) force.getSurfaceAreaEnergy());
     if (force.getNonbondedMethod() != GBSAOBCForce::NoCutoff)
         obc.setUseCutoff((float) force.getCutoffDistance());
-    data.isPeriodic = (force.getNonbondedMethod() == GBSAOBCForce::CutoffPeriodic);
+    data.isPeriodic |= (force.getNonbondedMethod() == GBSAOBCForce::CutoffPeriodic);
 }
 
 double CpuCalcGBSAOBCForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
     copyChargesToPosq(context, charges, posqIndex);
-    if (data.isPeriodic) {
-        Vec3& boxSize = extractBoxSize(context);
-        float floatBoxSize[3] = {(float) boxSize[0], (float) boxSize[1], (float) boxSize[2]};
-        obc.setPeriodic(floatBoxSize);
-    }
+    if (data.isPeriodic)
+        obc.setPeriodic(extractBoxVectors(context));
     double energy = 0.0;
     obc.computeForce(data.posq, data.threadForce, includeEnergy ? &energy : NULL, data.threads);
     return energy;
@@ -1064,11 +1486,10 @@ void CpuCalcCustomGBForceKernel::initialize(const System& system, const CustomGB
 
     // Build the arrays.
 
-    int numPerParticleParameters = force.getNumPerParticleParameters();
     particleParamArray.resize(numParticles);
     for (int i = 0; i < numParticles; ++i)
         force.getParticleParameters(i, particleParamArray[i]);
-    for (int i = 0; i < numPerParticleParameters; i++)
+    for (int i = 0; i < force.getNumPerParticleParameters(); i++)
         particleParameterNames.push_back(force.getPerParticleParameterName(i));
     for (int i = 0; i < force.getNumGlobalParameters(); i++)
         globalParameterNames.push_back(force.getGlobalParameterName(i));
@@ -1076,15 +1497,30 @@ void CpuCalcCustomGBForceKernel::initialize(const System& system, const CustomGB
     nonbondedCutoff = force.getCutoffDistance();
     if (nonbondedMethod != NoCutoff)
         neighborList = new CpuNeighborList(4);
+    data.isPeriodic |= (force.getNonbondedMethod() == CustomGBForce::CutoffPeriodic);
 
+    // Record the tabulated function update counts for future reference.
+
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
+        tabulatedFunctionUpdateCount[force.getTabulatedFunctionName(i)] = force.getTabulatedFunction(i).getUpdateCount();
+
+    // Create the interaction.
+
+    createInteraction(force);
+}
+
+void CpuCalcCustomGBForceKernel::createInteraction(const CustomGBForce& force) {
     // Create custom functions for the tabulated functions.
 
     map<string, Lepton::CustomFunction*> functions;
-    for (int i = 0; i < force.getNumFunctions(); i++)
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
         functions[force.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(force.getTabulatedFunction(i));
 
     // Parse the expressions for computed values.
 
+    valueTypes.clear();
+    valueNames.clear();
+    energyParamDerivNames.clear();
     vector<vector<Lepton::CompiledExpression> > valueDerivExpressions(force.getNumComputedValues());
     vector<vector<Lepton::CompiledExpression> > valueGradientExpressions(force.getNumComputedValues());
     vector<vector<Lepton::CompiledExpression> > valueParamDerivExpressions(force.getNumComputedValues());
@@ -1095,7 +1531,7 @@ void CpuCalcCustomGBForceKernel::initialize(const System& system, const CustomGB
     particleVariables.insert("x");
     particleVariables.insert("y");
     particleVariables.insert("z");
-    for (int i = 0; i < numPerParticleParameters; i++) {
+    for (int i = 0; i < force.getNumPerParticleParameters(); i++) {
         particleVariables.insert(particleParameterNames[i]);
         pairVariables.insert(particleParameterNames[i]+"1");
         pairVariables.insert(particleParameterNames[i]+"2");
@@ -1134,6 +1570,7 @@ void CpuCalcCustomGBForceKernel::initialize(const System& system, const CustomGB
 
     // Parse the expressions for energy terms.
 
+    energyTypes.clear();
     vector<vector<Lepton::CompiledExpression> > energyDerivExpressions(force.getNumEnergyTerms());
     vector<vector<Lepton::CompiledExpression> > energyGradientExpressions(force.getNumEnergyTerms());
     vector<vector<Lepton::CompiledExpression> > energyParamDerivExpressions(force.getNumEnergyTerms());
@@ -1171,7 +1608,6 @@ void CpuCalcCustomGBForceKernel::initialize(const System& system, const CustomGB
     ixn = new CpuCustomGBForce(numParticles, exclusions, valueExpressions, valueDerivExpressions, valueGradientExpressions, valueParamDerivExpressions,
         valueNames, valueTypes, energyExpressions, energyDerivExpressions, energyGradientExpressions, energyParamDerivExpressions, energyTypes,
         particleParameterNames, data.threads);
-    data.isPeriodic = (force.getNonbondedMethod() == CustomGBForce::CutoffPeriodic);
 }
 
 double CpuCalcCustomGBForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
@@ -1179,7 +1615,7 @@ double CpuCalcCustomGBForceKernel::execute(ContextImpl& context, bool includeFor
     double energy = 0;
     Vec3* boxVectors = extractBoxVectors(context);
     if (data.isPeriodic)
-        ixn->setPeriodic(extractBoxSize(context));
+        ixn->setPeriodic(boxVectors);
     if (nonbondedMethod != NoCutoff) {
         vector<set<int> > noExclusions(numParticles);
         neighborList->computeNeighborList(numParticles, data.posq, noExclusions, boxVectors, data.isPeriodic, nonbondedCutoff, data.threads);
@@ -1210,6 +1646,22 @@ void CpuCalcCustomGBForceKernel::copyParametersToContext(ContextImpl& context, c
         for (int j = 0; j < numParameters; j++)
             particleParamArray[i][j] = static_cast<double>(parameters[j]);
     }
+
+    // See if any tabulated functions have changed.
+
+    bool changed = false;
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++) {
+        string name = force.getTabulatedFunctionName(i);
+        if (force.getTabulatedFunction(i).getUpdateCount() != tabulatedFunctionUpdateCount[name]) {
+            tabulatedFunctionUpdateCount[name] = force.getTabulatedFunction(i).getUpdateCount();
+            changed = true;
+        }
+    }
+    if (changed) {
+        delete ixn;
+        ixn = NULL;
+        createInteraction(force);
+    }
 }
 
 CpuCalcCustomManyParticleForceKernel::~CpuCalcCustomManyParticleForceKernel() {
@@ -1222,7 +1674,6 @@ void CpuCalcCustomManyParticleForceKernel::initialize(const System& system, cons
     // Build the arrays.
 
     numParticles = system.getNumParticles();
-    int numParticleParameters = force.getNumPerParticleParameters();
     particleParamArray.resize(numParticles);
     for (int i = 0; i < numParticles; ++i) {
         int type;
@@ -1230,10 +1681,18 @@ void CpuCalcCustomManyParticleForceKernel::initialize(const System& system, cons
     }
     for (int i = 0; i < force.getNumGlobalParameters(); i++)
         globalParameterNames.push_back(force.getGlobalParameterName(i));
+
+    // Record the tabulated function update counts for future reference.
+
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++)
+        tabulatedFunctionUpdateCount[force.getTabulatedFunctionName(i)] = force.getTabulatedFunction(i).getUpdateCount();
+
+    // Create the interaction.
+
     ixn = new CpuCustomManyParticleForce(force, data.threads);
     nonbondedMethod = CalcCustomManyParticleForceKernel::NonbondedMethod(force.getNonbondedMethod());
     cutoffDistance = force.getCutoffDistance();
-    data.isPeriodic = (nonbondedMethod == CutoffPeriodic);
+    data.isPeriodic |= (nonbondedMethod == CutoffPeriodic);
 }
 
 double CpuCalcCustomManyParticleForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
@@ -1267,6 +1726,22 @@ void CpuCalcCustomManyParticleForceKernel::copyParametersToContext(ContextImpl& 
         for (int j = 0; j < numParameters; j++)
             particleParamArray[i][j] = static_cast<double>(parameters[j]);
     }
+
+    // See if any tabulated functions have changed.
+
+    bool changed = false;
+    for (int i = 0; i < force.getNumTabulatedFunctions(); i++) {
+        string name = force.getTabulatedFunctionName(i);
+        if (force.getTabulatedFunction(i).getUpdateCount() != tabulatedFunctionUpdateCount[name]) {
+            tabulatedFunctionUpdateCount[name] = force.getTabulatedFunction(i).getUpdateCount();
+            changed = true;
+        }
+    }
+    if (changed) {
+        delete ixn;
+        ixn = NULL;
+        ixn = new CpuCustomManyParticleForce(force, data.threads);
+    }
 }
 
 CpuCalcGayBerneForceKernel::~CpuCalcGayBerneForceKernel() {
@@ -1276,7 +1751,7 @@ CpuCalcGayBerneForceKernel::~CpuCalcGayBerneForceKernel() {
 
 void CpuCalcGayBerneForceKernel::initialize(const System& system, const GayBerneForce& force) {
     ixn = new CpuGayBerneForce(force);
-    data.isPeriodic = (force.getNonbondedMethod() == GayBerneForce::CutoffPeriodic);
+    data.isPeriodic |= (force.getNonbondedMethod() == GayBerneForce::CutoffPeriodic);
     if (force.getNonbondedMethod() != GayBerneForce::NoCutoff) {
         double cutoff = force.getCutoffDistance();
         data.requestNeighborList(cutoff, 0.1*cutoff, true, ixn->getExclusions());
@@ -1293,43 +1768,118 @@ void CpuCalcGayBerneForceKernel::copyParametersToContext(ContextImpl& context, c
     ixn = new CpuGayBerneForce(force);
 }
 
-CpuIntegrateLangevinStepKernel::~CpuIntegrateLangevinStepKernel() {
+CpuCalcLCPOForceKernel::~CpuCalcLCPOForceKernel() {
+    if (ixn != NULL) {
+        delete ixn;
+    }
+}
+
+void CpuCalcLCPOForceKernel::initialize(const System& system, const LCPOForce& force) {
+    doInteraction = false;
+    oneBodyEnergy = 0.0;
+
+    double surfaceTension = force.getSurfaceTension();
+    for (int i = 0; i < force.getNumParticles(); i++) {
+        double radius, p1, p2, p3, p4;
+        force.getParticleParameters(i, radius, p1, p2, p3, p4);
+        p1 *= surfaceTension;
+        p2 *= surfaceTension;
+        p3 *= surfaceTension;
+        p4 *= surfaceTension;
+        oneBodyEnergy += 4.0 * PI_M * p1 * radius * radius;
+
+        if (radius != 0.0) {
+            activeParticles.push_back(i);
+            parameters.push_back(fvec4(radius, p2, p3, p4));
+            if (p2 != 0.0 || p3 != 0.0 || p4 != 0.0) {
+                doInteraction = true;
+            }
+        }
+    }
+
+    bool usePeriodic = force.usesPeriodicBoundaryConditions();
+    ixn = new CpuLCPOForce(data.threads, activeParticles, parameters, usePeriodic);
+    data.isPeriodic |= usePeriodic;
+}
+
+double CpuCalcLCPOForceKernel::execute(ContextImpl& context, bool includeForces, bool includeEnergy) {
+    double energy = oneBodyEnergy;
+    if (doInteraction) {
+        ixn->execute(extractBoxVectors(context), data.posq, data.threadForce, includeForces, includeEnergy, energy);
+    }
+    return energy;
+}
+
+void CpuCalcLCPOForceKernel::copyParametersToContext(ContextImpl& context, const LCPOForce& force) {
+    doInteraction = false;
+    oneBodyEnergy = 0.0;
+
+    double surfaceTension = force.getSurfaceTension();
+    int activeIndex = 0;
+    for (int i = 0; i < force.getNumParticles(); i++) {
+        double radius, p1, p2, p3, p4;
+        force.getParticleParameters(i, radius, p1, p2, p3, p4);
+        p1 *= surfaceTension;
+        p2 *= surfaceTension;
+        p3 *= surfaceTension;
+        p4 *= surfaceTension;
+        oneBodyEnergy += 4.0 * PI_M * p1 * radius * radius;
+
+        if (radius != 0.0) {
+            if (activeIndex < activeParticles.size()) {
+                activeParticles[activeIndex] = i;
+                parameters[activeIndex] = fvec4(radius, p2, p3, p4);
+            }
+            activeIndex++;
+            if (p2 != 0.0 || p3 != 0.0 || p4 != 0.0) {
+                doInteraction = true;
+            }
+        }
+    }
+    if (activeIndex != activeParticles.size()) {
+        throw OpenMMException("updateParametersInContext: The number of non-excluded particles for LCPO has changed");
+    }
+
+    ixn->updateRadii();
+}
+
+CpuIntegrateLangevinMiddleStepKernel::~CpuIntegrateLangevinMiddleStepKernel() {
     if (dynamics)
         delete dynamics;
 }
 
-void CpuIntegrateLangevinStepKernel::initialize(const System& system, const LangevinIntegrator& integrator) {
+void CpuIntegrateLangevinMiddleStepKernel::initialize(const System& system, const LangevinMiddleIntegrator& integrator) {
     int numParticles = system.getNumParticles();
     masses.resize(numParticles);
     for (int i = 0; i < numParticles; ++i)
-        masses[i] = static_cast<double>(system.getParticleMass(i));
+        masses[i] = system.getParticleMass(i);
     data.random.initialize(integrator.getRandomNumberSeed(), data.threads.getNumThreads());
 }
 
-void CpuIntegrateLangevinStepKernel::execute(ContextImpl& context, const LangevinIntegrator& integrator) {
+void CpuIntegrateLangevinMiddleStepKernel::execute(ContextImpl& context, const LangevinMiddleIntegrator& integrator) {
     double temperature = integrator.getTemperature();
     double friction = integrator.getFriction();
     double stepSize = integrator.getStepSize();
     vector<Vec3>& posData = extractPositions(context);
     vector<Vec3>& velData = extractVelocities(context);
-    vector<Vec3>& forceData = extractForces(context);
     if (dynamics == 0 || temperature != prevTemp || friction != prevFriction || stepSize != prevStepSize) {
         // Recreate the computation objects with the new parameters.
         
         if (dynamics)
             delete dynamics;
-        dynamics = new CpuLangevinDynamics(context.getSystem().getNumParticles(), stepSize, friction, temperature, data.threads, data.random);
+        dynamics = new CpuLangevinMiddleDynamics(context.getSystem().getNumParticles(), stepSize, friction, temperature, data.threads, data.random);
         dynamics->setReferenceConstraintAlgorithm(&extractConstraints(context));
+        dynamics->setVirtualSites(extractVirtualSites(context));
         prevTemp = temperature;
         prevFriction = friction;
         prevStepSize = stepSize;
     }
-    dynamics->update(context.getSystem(), posData, velData, forceData, masses, integrator.getConstraintTolerance());
+    dynamics->update(context, posData, velData, masses, integrator.getConstraintTolerance(), extractBoxVectors(context));
     ReferencePlatform::PlatformData* refData = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
     refData->time += stepSize;
     refData->stepCount++;
 }
 
-double CpuIntegrateLangevinStepKernel::computeKineticEnergy(ContextImpl& context, const LangevinIntegrator& integrator) {
-    return computeShiftedKineticEnergy(context, masses, 0.5*integrator.getStepSize());
+double CpuIntegrateLangevinMiddleStepKernel::computeKineticEnergy(ContextImpl& context, const LangevinMiddleIntegrator& integrator) {
+    return computeShiftedKineticEnergy(context, masses, 0.0);
 }

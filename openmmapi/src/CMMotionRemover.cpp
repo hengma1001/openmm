@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008 Stanford University and the Authors.           *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -30,11 +28,19 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/CMMotionRemover.h"
+#include "openmm/OpenMMException.h"
 #include "openmm/internal/CMMotionRemoverImpl.h"
 
 using namespace OpenMM;
 
-CMMotionRemover::CMMotionRemover(int frequency) : frequency(frequency) {
+CMMotionRemover::CMMotionRemover(int frequency) {
+    setFrequency(frequency);
+}
+
+void CMMotionRemover::setFrequency(int freq) {
+    if (freq <= 0)
+        throw OpenMMException("CMMotionRemover: frequency must be positive");
+    frequency = freq;
 }
 
 ForceImpl* CMMotionRemover::createImpl() const {

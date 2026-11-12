@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2014-2018 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -41,7 +39,7 @@ CpuBondForce::CpuBondForce() {
 void CpuBondForce::initialize(int numAtoms, int numBonds, int numAtomsPerBond, vector<vector<int> >& bondAtoms, ThreadPool& threads) {
     this->numBonds = numBonds;
     this->numAtomsPerBond = numAtomsPerBond;
-    this->bondAtoms = &bondAtoms[0];
+    this->bondAtoms = bondAtoms.empty() ? nullptr : bondAtoms.data();
     this->threads = &threads;
     int numThreads = threads.getNumThreads();
     int targetBondsPerThread = numBonds/numThreads;
@@ -159,8 +157,8 @@ void CpuBondForce::assignBond(int bond, int thread, vector<int>& atomThread, vec
         if (atom != -1)
             throw OpenMMException("CpuBondForce: Internal error: atoms assigned to threads incorrectly");
         atom = thread;
-        for (int bond : atomBonds[atom])
-            candidateBonds.push_back(bond);
+        for (int bondIndex : atomBonds[atom])
+            candidateBonds.push_back(bondIndex);
     }
 }
 

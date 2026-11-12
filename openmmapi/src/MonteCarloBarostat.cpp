@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -30,13 +28,38 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmm/MonteCarloBarostat.h"
+#include "openmm/OpenMMException.h"
 #include "openmm/internal/MonteCarloBarostatImpl.h"
+#include "openmm/MonteCarloAnisotropicBarostat.h"
 
 using namespace OpenMM;
 
-MonteCarloBarostat::MonteCarloBarostat(double defaultPressure, double defaultTemperature, int frequency) :
-        defaultPressure(defaultPressure), defaultTemperature(defaultTemperature), frequency(frequency) {
+MonteCarloBarostat::MonteCarloBarostat(double defaultPressure, double defaultTemperature, int frequency, bool scaleMoleculesAsRigid) :
+            scaleMoleculesAsRigid(scaleMoleculesAsRigid) {
+    setDefaultPressure(defaultPressure);
+    setDefaultTemperature(defaultTemperature);
+    setFrequency(frequency);
     setRandomNumberSeed(0);
+}
+
+void MonteCarloBarostat::setDefaultPressure(double pressure) {
+    defaultPressure = pressure;
+}
+
+void MonteCarloBarostat::setFrequency(int freq) {
+    if (freq < 0)
+        throw OpenMMException("Frequency cannot be negative");
+    frequency = freq;
+}
+
+void MonteCarloBarostat::setDefaultTemperature(double temp) {
+    if (temp < 0)
+        throw OpenMMException("Temperature cannot be negative");
+    defaultTemperature = temp;
+}
+
+double MonteCarloBarostat::computeCurrentPressure(Context& context) const {
+    return dynamic_cast<MonteCarloBarostatImpl&>(getImplInContext(context)).computeCurrentPressure(getContextImpl(context));
 }
 
 ForceImpl* MonteCarloBarostat::createImpl() const {

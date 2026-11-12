@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -85,18 +83,33 @@ namespace OpenMM {
  * As an example, the following code creates a CustomManyParticleForce that implements an Axilrod-Teller potential.  This
  * is an interaction between three particles that depends on all three distances and angles formed by the particles.
  *
- * <tt><pre>CustomManyParticleForce* force = new CustomManyParticleForce(3,
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomManyParticleForce* force = new CustomManyParticleForce(3,
  *     "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
  *     "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
  *     "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
  * force->setPermutationMode(CustomManyParticleForce::SinglePermutation);
- * </pre></tt>
+ * </c++>
+ * <python>
+ * force = CustomManyParticleForce(3,
+ *     "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
+ *     "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
+ *     "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)")
+ * force.setPermutationMode(CustomManyParticleForce.SinglePermutation)
+ * </python>
+ * \endverbatim
  *
  * This force depends on one parameter, C.  The following code defines it as a global parameter:
  *
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * force->addGlobalParameter("C", 1.0);
- * </pre></tt>
+ * </c++>
+ * <python>
+ * force.addGlobalParameter("C", 1.0)
+ * </python>
+ * \endverbatim
  *
  * Notice that the expression is symmetric with respect to the particles.  It only depends on the products
  * cos(theta1)*cos(theta2)*cos(theta3) and r12*r13*r23, both of which are unchanged if the labels p1, p2, and p3 are permuted.
@@ -110,11 +123,20 @@ namespace OpenMM {
  * between one central particle and other nearby particles.  An example of this is the 3-particle piece of the Stillinger-Weber
  * potential:
  *
- * <tt><pre>CustomManyParticleForce* force = new CustomManyParticleForce(3,
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomManyParticleForce* force = new CustomManyParticleForce(3,
  *     "L*eps*(cos(theta1)+1/3)^2*exp(sigma*gamma/(r12-a*sigma))*exp(sigma*gamma/(r13-a*sigma));"
-       "r12 = distance(p1,p2); r13 = distance(p1,p3); theta1 = angle(p3,p1,p2)");
+ *     "r12 = distance(p1,p2); r13 = distance(p1,p3); theta1 = angle(p3,p1,p2)");
  * force->setPermutationMode(CustomManyParticleForce::UniqueCentralParticle);
- * </pre></tt>
+ * </c++>
+ * <python>
+ * force = CustomManyParticleForce(3,
+ *     "L*eps*(cos(theta1)+1/3)^2*exp(sigma*gamma/(r12-a*sigma))*exp(sigma*gamma/(r13-a*sigma));"
+ *     "r12 = distance(p1,p2); r13 = distance(p1,p3); theta1 = angle(p3,p1,p2)")
+ * force.setPermutationMode(CustomManyParticleForce.UniqueCentralParticle)
+ * </python>
+ * \endverbatim
  *
  * When the permutation mode is set to UniqueCentralParticle, particle p1 is treated as the central particle.  For a set of
  * N particles, the expression is evaluated N times, once with each particle as p1.  The expression can therefore treat
@@ -133,27 +155,51 @@ namespace OpenMM {
  *
  * A particle type is an integer that you specify when you call addParticle().  (If you omit the argument, it defaults
  * to 0.)  For the water model, you could specify 0 for all oxygen atoms and 1 for all hydrogen atoms.  You can then
- * call setTypeFilter() to specify the list of allowed types for each of the N particles involved in an interaction:
+ * call setTypeFilter() to specify the set of allowed types for each of the N particles involved in an interaction:
  *
- * <tt><pre>
- * set&lt;int&gt; oxygenTypes, hydrogenTypes;
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * set<int> oxygenTypes, hydrogenTypes;
  * oxygenTypes.insert(0);
  * hydrogenTypes.insert(1);
- * force->setTypeFilter(0, oxygenTypes);
- * force->setTypeFilter(1, hydrogenTypes);
- * force->setTypeFilter(2, hydrogenTypes);
- * </pre></tt>
+ * force.setTypeFilter(0, oxygenTypes);
+ * force.setTypeFilter(1, hydrogenTypes);
+ * force.setTypeFilter(2, hydrogenTypes);
+ * </c++>
+ * <python>
+ * oxygenTypes = {0}
+ * hydrogenTypes = {1}
+ * force.setTypeFilter(0, oxygenTypes)
+ * force.setTypeFilter(1, hydrogenTypes)
+ * force.setTypeFilter(2, hydrogenTypes)
+ * </python>
+ * \endverbatim
  *
  * This specifies that of the three particles in an interaction, p1 must be oxygen while p2 and p3 must be hydrogen.
  * The energy expression will only be evaluated for triplets of particles that satisfy those requirements.  It will
  * still only be evaluated once for each triplet, so it must still be symmetric with respect to p2 and p3.
  *
- * Expressions may involve the operators + (add), - (subtract), * (multiply), / (divide), and ^ (power), and the following
- * functions: sqrt, exp, log, sin, cos, sec, csc, tan, cot, asin, acos, atan, sinh, cosh, tanh, erf, erfc, min, max, abs, floor, ceil, step, delta, select.  All trigonometric functions
- * are defined in radians, and log is the natural logarithm.  step(x) = 0 if x is less than 0, 1 otherwise.  delta(x) = 1 if x is 0, 0 otherwise.
- * select(x,y,z) = z if x = 0, y otherwise.  The names of per-particle parameters have the suffix "1", "2", etc. appended to them to indicate the values for
+ * For details on how to write expressions, see [the User Guide](https://docs.openmm.org/latest/userguide/theory/03_custom_forces.html#writing-custom-expressions).
+ *
+ * The names of per-particle parameters have the suffix "1", "2", etc. appended to them to indicate the values for
  * the multiple interacting particles. For example, if you define a per-particle parameter called "charge", then the variable "charge2" is the charge of particle p2.
  * As seen above, the expression may also involve intermediate quantities that are defined following the main expression, using ";" as a separator.
+ * 
+ * This class also supports the functions pointdistance(x1, y1, z1, x2, y2, z2),
+ * pointangle(x1, y1, z1, x2, y2, z2, x3, y3, z3), and pointdihedral(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4).
+ * These functions are similar to distance(), angle(), and dihedral(), but the arguments are the
+ * coordinates of points to perform the calculation based on rather than the names of particles.
+ * This enables more flexible geometric calculations.  For example, the following computes the distance
+ * from particle p1 to the midpoint between particles p2 and p3.
+ * 
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomManyParticleForce* force = new CustomManyParticleForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)");
+ * </c++>
+ * <python>
+ * force = CustomManyParticleForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)")
+ * </python>
+ * \endverbatim
  *
  * In addition, you can call addTabulatedFunction() to define a new function based on tabulated values.  You specify the function by
  * creating a TabulatedFunction object.  That function can then appear in the expression.
@@ -212,39 +258,27 @@ public:
     /**
      * Get the number of particles in each set for which the energy is evaluated
      */
-    int getNumParticlesPerSet() const {
-        return particlesPerSet;
-    }
+    int getNumParticlesPerSet() const;
     /**
      * Get the number of particles for which force field parameters have been defined.
      */
-    int getNumParticles() const {
-        return particles.size();
-    }
+    int getNumParticles() const;
     /**
      * Get the number of particle pairs whose interactions should be excluded.
      */
-    int getNumExclusions() const {
-        return exclusions.size();
-    }
+    int getNumExclusions() const;
     /**
      * Get the number of per-particle parameters that the interaction depends on.
      */
-    int getNumPerParticleParameters() const {
-        return particleParameters.size();
-    }
+    int getNumPerParticleParameters() const;
     /**
      * Get the number of global parameters that the interaction depends on.
      */
-    int getNumGlobalParameters() const {
-        return globalParameters.size();
-    }
+    int getNumGlobalParameters() const;
     /**
      * Get the number of tabulated functions that have been defined.
      */
-    int getNumTabulatedFunctions() const {
-        return functions.size();
-    }
+    int getNumTabulatedFunctions() const;
     /**
      * Get the algebraic expression that gives the interaction energy of each bond
      */
@@ -452,15 +486,16 @@ public:
      */
     const std::string& getTabulatedFunctionName(int index) const;
     /**
-     * Update the per-particle parameters in a Context to match those stored in this Force object.  This method provides
+     * Update the per-particle parameters and tabulated functions in a Context to match those stored in this Force object.  This method provides
      * an efficient method to update certain parameters in an existing Context without needing to reinitialize it.
      * Simply call setParticleParameters() to modify this object's parameters, then call updateParametersInContext()
      * to copy them over to the Context.
      *
-     * This method has several limitations.  The only information it updates is the values of per-particle parameters.
-     * All other aspects of the Force (the energy function, nonbonded method, cutoff distance, etc.) are unaffected and can
+     * This method has several limitations.  The only information it updates is the values of per-particle parameters and tabulated
+     * functions.  All other aspects of the Force (the energy function, nonbonded method, cutoff distance, etc.) are unaffected and can
      * only be changed by reinitializing the Context.  Also, this method cannot be used to add new particles, only to change
-     * the parameters of existing ones.
+     * the parameters of existing ones.  While the tabulated values of a function can change, everything else about it (its dimensions,
+     * the data range) must not be changed.
      */
     void updateParametersInContext(Context& context);
     /**

@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMAmoeba                                *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008 Stanford University and the Authors.           *
  * Authors:                                                                   *
@@ -60,9 +58,21 @@ public:
     }
     double calcForcesAndEnergy(ContextImpl& context, bool includeForces, bool includeEnergy, int groups);
     std::map<std::string, double> getDefaultParameters() {
-        return std::map<std::string, double>(); // This force field doesn't define any parameters.
+        return {{AmoebaVdwForce::Lambda(), 1.0}};
     }
     std::vector<std::string> getKernelNames();
+    /**
+     * Compute the matrix of sigma and epsilon to use between every pair of particle types.
+     * 
+     * @param force               the force for which to calculate it
+     * @param[out] type           on exit, this contains the type index of every particle
+     * @param[out] sigmaMatrix    on exit, sigma[i][j] contains the value to use for interactions between particles
+     *                            of types i and j
+     * @param[out] epsilonMatrix  on exit, epsilon[i][j] contains the value to use for interactions between particles
+     *                            of types i and j
+     */
+    static void createParameterMatrix(const AmoebaVdwForce& force, std::vector<int>& type,
+        std::vector<std::vector<double> >& sigmaMatrix, std::vector<std::vector<double> >& epsilonMatrix);
     /**
      * Compute the coefficient which, when divided by the periodic box volume, gives the
      * long range dispersion correction to the energy.

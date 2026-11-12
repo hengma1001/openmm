@@ -1,20 +1,13 @@
 """
-Tests the functionality in the simtk.unit package.
+Tests the functionality in the openmm.unit package.
 """
 from __future__ import division
 
-from simtk import unit as u
+from openmm import unit as u
 import copy
 import math
 import unittest
-try:
-    import numpy as np
-except ImportError:
-    np = None
-try:
-    from itertools import izip as zip
-except ImportError:
-    pass # Python 3... zip _is_ izip
+import numpy as np
 
 class QuantityTestCase(unittest.TestCase):
 
@@ -270,6 +263,26 @@ class TestUnits(QuantityTestCase):
         self.assertEqual(str(q), '2.0 nm**2/(A**2)')
         self.assertEqual(q.reduce_unit(), 200)
 
+    def testCompoundRatioMultiplyDivide(self):
+        """ Tests Quantity * Quantity and Quantity / Quantity on dimensionless
+            compound ratio units, which must fold both units into the product
+            before any dimensionless collapse drops self's unit """
+        a = u.Quantity(3.0, u.nanometer / u.angstrom)
+        b = u.Quantity(2.0, u.angstrom / u.nanometer)
+        # a == 30 dimensionless, b == 0.2 dimensionless
+        self.assertAlmostEqual(a * a, 900.0)
+        self.assertAlmostEqual(a * a, (a ** 2).reduce_unit())
+        self.assertAlmostEqual(a / a, 1.0)
+        self.assertAlmostEqual(a / b, 150.0)
+        self.assertAlmostEqual(a * b, 6.0)
+        c = u.Quantity(4.0, u.meter / u.kilometer)
+        self.assertAlmostEqual(a * c, 0.12)
+        # non-dimensionless products are unaffected
+        v = 3.0 * u.nanometer
+        w = 2.0 * u.nanometer
+        self.assertAlmostEqualQuantities(v * w, 6.0 * u.nanometer**2)
+        self.assertAlmostEqualQuantities(v / w * u.nanometer, 1.5 * u.nanometer)
+
     def testCollectionQuantityOperations(self):
         """ Tests that Quantity collections behave correctly """
         # Tests that __getitem__ returns a unit
@@ -499,14 +512,14 @@ class TestUnits(QuantityTestCase):
         """ Tests the properties of unit.dimensionless """
         x = 5 * u.dimensionless
         y = u.Quantity(5, u.dimensionless)
-        self.assertTrue(u.is_quantity(x))
+        self.assertFalse(u.is_quantity(x))
         self.assertTrue(u.is_quantity(y))
-        self.assertNotEqual(x, 5)
+        self.assertEqual(x, 5)
         self.assertNotEqual(y, 5)
-        self.assertEqual(x, y)
-        self.assertEqual(x.value_in_unit_system(u.si_unit_system), 5)
-        self.assertEqual(x.value_in_unit_system(u.cgs_unit_system), 5)
-        self.assertEqual(x.value_in_unit_system(u.md_unit_system), 5)
+        self.assertNotEqual(x, y)
+        self.assertEqual(y.value_in_unit_system(u.si_unit_system), 5)
+        self.assertEqual(y.value_in_unit_system(u.cgs_unit_system), 5)
+        self.assertEqual(y.value_in_unit_system(u.md_unit_system), 5)
         x = u.Quantity(1.0, u.dimensionless)
         y = u.Quantity(1.0, u.dimensionless)
         self.assertIsNot(x, y)
@@ -630,7 +643,7 @@ class TestUnits(QuantityTestCase):
         """ Miscellaneous tests for the unit package """
         self.assertTrue(u.meter is not None)
         self.assertFalse(u.meter is None)
-        self.assertEqual(repr(1.2*u.meters), 'Quantity(value=1.2, unit=meter)')
+        self.assertEqual(repr(1.2*u.meters), '1.2 m')
         class Foo(object):
             def bar(self):
                 return 'bar'
@@ -642,7 +655,6 @@ class TestUnits(QuantityTestCase):
         self.assertEqual(str(u.meters*u.meters), 'meter**2')
         self.assertEqual(str(u.meter*u.meter), 'meter**2')
 
-@unittest.skipIf(np is None, 'Skipping numpy units tests')
 class TestNumpyUnits(QuantityTestCase):
 
     def testNumpyQuantity(self):
@@ -672,7 +684,7 @@ class TestNumpyUnits(QuantityTestCase):
 
     def testNumpyIsString(self):
         """ Tests the internal _is_string method with numpy Quantities """
-        from simtk.unit.quantity import _is_string
+        from openmm.unit.quantity import _is_string
         a = np.array([[1, 2, 3], [4, 5, 6]])
         self.assertIsInstance("", str)
         self.assertTrue(_is_string(""))

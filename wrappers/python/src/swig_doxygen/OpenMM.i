@@ -1,4 +1,4 @@
-%module openmm
+%module(directors="1") openmm
 %include "factory.i"
 
 %include "std_string.i"
@@ -10,14 +10,16 @@
 
 namespace std {
   %template(pairii) pair<int,int>;
+  %template(vectorc) vector<char>;
   %template(vectord) vector<double>;
-  %template(vectorddd) vector< vector< vector<double> > >;
+  %template(vectorvectorvectord) vector< vector< vector<double> > >;
   %template(vectori) vector<int>;
-  %template(vectorii) vector < vector<int> >;
+  %template(vectorvectori) vector < vector<int> >;
   %template(vectorpairii) vector< pair<int,int> >;
   %template(vectorstring) vector<string>;
   %template(mapstringstring) map<string,string>;
   %template(mapstringdouble) map<string,double>;
+  %template(vectormapstringstring) vector<map<string,string> >;
   %template(mapii) map<int,int>;
   %template(seti) set<int>;
 };
@@ -36,6 +38,9 @@ namespace std {
 #include "OpenMMAmoeba.h"
 #include "openmm/RPMDIntegrator.h"
 #include "openmm/RPMDMonteCarloBarostat.h"
+#include "openmm/RPMDMonteCarloAnisotropicBarostat.h"
+#include "openmm/RPMDMonteCarloFlexibleBarostat.h"
+#include "openmm/RPMDMonteCarloMembraneBarostat.h"
 #include "OpenMMDrude.h"
 #include "openmm/serialization/SerializationNode.h"
 #include "openmm/serialization/SerializationProxy.h"
@@ -45,6 +50,7 @@ using namespace OpenMM;
 
 %}
 
+%feature("flatnested", "1");
 %feature("autodoc", "0");
 %nodefaultctor;
 

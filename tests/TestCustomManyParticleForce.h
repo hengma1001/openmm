@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2014-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2014-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -47,6 +45,17 @@ using namespace OpenMM;
 using namespace std;
 
 const double TOL = 1e-5;
+
+string axilrodTellerParticleExpression =
+        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
+        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
+        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)";
+
+string axilrodTellerPointExpression =
+        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
+        "theta1=pointangle(x1,y1,z1,x2,y2,z2,x3,y3,z3); theta2=pointangle(x2,y2,z2,x3,y3,z3,x1,y1,z1); theta3=pointangle(x3,y3,z3,x1,y1,z1,x2,y2,z2);"
+        "r12=pointdistance(x1,y1,z1,x2,y2,z2); r13=pointdistance(x1,y1,z1,x3,y3,z3); r23=pointdistance(x2,y2,z2,x3,y3,z3)";
+
 
 Vec3 computeDelta(const Vec3& pos1, const Vec3& pos2, bool periodic, const Vec3* periodicBoxVectors) {
     Vec3 diff = pos1-pos2;
@@ -208,11 +217,8 @@ void validateStillingerWeber(CustomManyParticleForce* force, const vector<Vec3>&
     ASSERT_EQUAL_TOL(norm, (state2.getPotentialEnergy()-state3.getPotentialEnergy())/stepSize, 1e-4);
 }
 
-void testNoCutoff() {
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+void testNoCutoff(bool byParticle) {
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, byParticle ? axilrodTellerParticleExpression : axilrodTellerPointExpression);
     force->addGlobalParameter("C", 1.5);
     vector<double> params;
     force->addParticle(params);
@@ -229,11 +235,8 @@ void testNoCutoff() {
     validateAxilrodTeller(force, positions, expectedSets, 2.0, false);
 }
 
-void testCutoff() {
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+void testCutoff(bool byParticle) {
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, byParticle ? axilrodTellerParticleExpression : axilrodTellerPointExpression);
     force->addGlobalParameter("C", 1.5);
     force->setNonbondedMethod(CustomManyParticleForce::CutoffNonPeriodic);
     force->setCutoffDistance(1.55);
@@ -254,11 +257,8 @@ void testCutoff() {
     validateAxilrodTeller(force, positions, expectedSets, 2.0, false);
 }
 
-void testPeriodic() {
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+void testPeriodic(bool byParticle) {
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, byParticle ? axilrodTellerParticleExpression : axilrodTellerPointExpression);
     force->addGlobalParameter("C", 1.5);
     force->setNonbondedMethod(CustomManyParticleForce::CutoffPeriodic);
     force->setCutoffDistance(1.05);
@@ -280,11 +280,8 @@ void testPeriodic() {
     validateAxilrodTeller(force, positions, expectedSets, boxSize, false);
 }
 
-void testTriclinic() {
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+void testTriclinic(bool byParticle) {
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, byParticle ? axilrodTellerParticleExpression : axilrodTellerPointExpression);
     force->addGlobalParameter("C", 1.5);
     force->setNonbondedMethod(CustomManyParticleForce::CutoffPeriodic);
     force->setCutoffDistance(1.05);
@@ -307,10 +304,7 @@ void testTriclinic() {
 }
 
 void testExclusions() {
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, axilrodTellerParticleExpression);
     force->addGlobalParameter("C", 1.5);
     vector<double> params;
     force->addParticle(params);
@@ -364,12 +358,7 @@ void testAllTerms() {
     CustomCompoundBondForce* force2 = new CustomCompoundBondForce(4,
         "distance(p1,p2)+angle(p1,p3,p4)+dihedral(p1,p4,p2,p3)+x1+y3+z4");
     system2.addForce(force2);
-    vector<int> particles;
-    particles.push_back(0);
-    particles.push_back(1);
-    particles.push_back(2);
-    particles.push_back(3);
-    force2->addBond(particles, params);
+    force2->addBond({0, 1, 2, 3}, params);
     for (int i = 0; i < numParticles; i++)
         system2.addParticle(1.0);
     
@@ -468,9 +457,7 @@ void testTabulatedFunctions() {
     
     // Create two tabulated functions.
     
-    vector<double> values;
-    values.push_back(0.0);
-    values.push_back(50.0);
+    vector<double> values = {0.0, 50.0};
     Continuous1DFunction* f1 = new Continuous1DFunction(values, 0, 100);
     OpenMM_SFMT::SFMT sfmt;
     init_gen_rand(0, sfmt);
@@ -520,6 +507,15 @@ void testTabulatedFunctions() {
                 expectedEnergy += 0.5*(r12+r13+r23)*(c[i]+c[j]+c[k]);
             }
     ASSERT_EQUAL_TOL(expectedEnergy, state.getPotentialEnergy(), 1e-5);
+
+    // Try updating the tabulated function.
+
+    for (int i = 0; i < values.size(); i++)
+        values[i] *= 0.5;
+    dynamic_cast<Discrete3DFunction&>(force->getTabulatedFunction(1)).setFunctionParameters(numParticles, numParticles, numParticles, values);
+    force->updateParametersInContext(context);
+    state = context.getState(State::Energy);
+    ASSERT_EQUAL_TOL(0.5*expectedEnergy, state.getPotentialEnergy(), 1e-5);
 }
 
 void testTypeFilters() {
@@ -578,10 +574,7 @@ void testLargeSystem() {
     int numParticles = gridSize*gridSize*gridSize;
     double boxSize = 3.0;
     double spacing = boxSize/gridSize;
-    CustomManyParticleForce* force = new CustomManyParticleForce(3,
-        "C*(1+3*cos(theta1)*cos(theta2)*cos(theta3))/(r12*r13*r23)^3;"
-        "theta1=angle(p1,p2,p3); theta2=angle(p2,p3,p1); theta3=angle(p3,p1,p2);"
-        "r12=distance(p1,p2); r13=distance(p1,p3); r23=distance(p2,p3)");
+    CustomManyParticleForce* force = new CustomManyParticleForce(3, axilrodTellerParticleExpression);
     force->addGlobalParameter("C", 1.5);
     force->setNonbondedMethod(CustomManyParticleForce::CutoffPeriodic);
     force->setCutoffDistance(0.6);
@@ -601,7 +594,7 @@ void testLargeSystem() {
     system.addForce(force);
     VerletIntegrator integrator1(0.001);
     VerletIntegrator integrator2(0.001);
-    Context context1(system, integrator1, Platform::getPlatformByName("Reference"));
+    Context context1(system, integrator1, Platform::getPlatform("Reference"));
     Context context2(system, integrator2, platform);
     context1.setPositions(positions);
     context2.setPositions(positions);
@@ -696,7 +689,7 @@ void testCentralParticleModeLargeSystem() {
     system.addForce(force);
     VerletIntegrator integrator1(0.001);
     VerletIntegrator integrator2(0.001);
-    Context context1(system, integrator1, Platform::getPlatformByName("Reference"));
+    Context context1(system, integrator1, Platform::getPlatform("Reference"));
     Context context2(system, integrator2, platform);
     context1.setPositions(positions);
     context2.setPositions(positions);
@@ -729,10 +722,14 @@ void runPlatformTests();
 int main(int argc, char* argv[]) {
     try {
         initializeTests(argc, argv);
-        testNoCutoff();
-        testCutoff();
-        testPeriodic();
-        testTriclinic();
+        testNoCutoff(true);
+        testNoCutoff(false);
+        testCutoff(true);
+        testCutoff(false);
+        testPeriodic(true);
+        testPeriodic(false);
+        testTriclinic(true);
+        testTriclinic(false);
         testExclusions();
         testAllTerms();
         testParameters();

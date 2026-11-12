@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                               OpenMMAmoeba                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008 Stanford University and the Authors.           *
  * Authors:                                                                   *
@@ -132,16 +130,17 @@ void AmoebaTorsionTorsionForceImpl::reorderGrid(const TorsionTorsionGrid& grid, 
 
             // increment map iterators
 
-            mapJJ++;
+            ++mapJJ;
             if (mapJJ == map_Double_IntPair.end()) {
-                mapII++;
+                ++mapII;
                 if (mapII == mapAngles.end()) {
                     if ((jj != (grid[ii].size()-1)) && (ii != (grid.size()-1))) {
                         char buffer[1024];
                         (void) sprintf(buffer, "AmoebaTorsionTorsionForceImpl::reorderGrid: error detected with map iterators.\n");
                         throw OpenMMException(buffer);
                     }
-                } else {
+                }
+                else {
                     map_Double_IntPair  = mapII->second;
                     mapJJ               = map_Double_IntPair.begin();
                 }
@@ -153,8 +152,6 @@ void AmoebaTorsionTorsionForceImpl::reorderGrid(const TorsionTorsionGrid& grid, 
 }
 
 std::vector<std::string> AmoebaTorsionTorsionForceImpl::getKernelNames() {
-    std::vector<std::string> names;
-    names.push_back(CalcAmoebaTorsionTorsionForceKernel::Name());
-    return names;
+    return {CalcAmoebaTorsionTorsionForceKernel::Name()};
 }
 

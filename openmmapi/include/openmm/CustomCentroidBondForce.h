@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -86,7 +84,8 @@ namespace OpenMM {
  * As an example, the following code creates a CustomCentroidBondForce that implements a harmonic force between the
  * centers of mass of two groups of particles.
  *
- * <tt><pre>
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
  * CustomCentroidBondForce* force = new CustomCentroidBondForce(2, "0.5*k*distance(g1,g2)^2");
  * force->addPerBondParameter("k");
  * force->addGroup(particles1);
@@ -97,16 +96,39 @@ namespace OpenMM {
  * vector<double> bondParameters;
  * bondParameters.push_back(k);
  * force->addBond(bondGroups, bondParameters);
- * </pre></tt>
+ * </c++>
+ * <python>
+ * force = CustomCentroidBondForce(2, "0.5*k*distance(g1,g2)^2")
+ * force.addPerBondParameter("k")
+ * force.addGroup(particles1)
+ * force.addGroup(particles2)
+ * bondGroups = [0, 1]
+ * bondParameters = [k]
+ * force.addBond(bondGroups, bondParameters)
+ * </python>
+ * \endverbatim
  * 
  * This class also has the ability to compute derivatives of the potential energy with respect to global parameters.
  * Call addEnergyParameterDerivative() to request that the derivative with respect to a particular parameter be
  * computed.  You can then query its value in a Context by calling getState() on it.
  *
- * Expressions may involve the operators + (add), - (subtract), * (multiply), / (divide), and ^ (power), and the following
- * functions: sqrt, exp, log, sin, cos, sec, csc, tan, cot, asin, acos, atan, sinh, cosh, tanh, erf, erfc, min, max, abs, floor, ceil, step, delta, select.  All trigonometric functions
- * are defined in radians, and log is the natural logarithm.  step(x) = 0 if x is less than 0, 1 otherwise.  delta(x) = 1 if x is 0, 0 otherwise.
- * select(x,y,z) = z if x = 0, y otherwise.
+ * For details on how to write expressions, see [the User Guide](https://docs.openmm.org/latest/userguide/theory/03_custom_forces.html#writing-custom-expressions).
+ * 
+ * This class also supports the functions pointdistance(x1, y1, z1, x2, y2, z2),
+ * pointangle(x1, y1, z1, x2, y2, z2, x3, y3, z3), and pointdihedral(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4).
+ * These functions are similar to distance(), angle(), and dihedral(), but the arguments are the
+ * coordinates of points to perform the calculation based on rather than the names of groups.
+ * This enables more flexible geometric calculations.  For example, the following computes the distance
+ * from group g1 to the midpoint between groups g2 and g3.
+ * 
+ * \verbatim embed:rst:leading-asterisk
+ * <c++>
+ * CustomCentroidBondForce* force = new CustomCentroidBondForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)");
+ * </c++>
+ * <python>
+ * force = CustomCentroidBondForce(3, "pointdistance(x1, y1, z1, (x2+x3)/2, (y2+y3)/2, (z2+z3)/2)")
+ * </python>
+ * \endverbatim
  *
  * In addition, you can call addTabulatedFunction() to define a new function based on tabulated values.  You specify the function by
  * creating a TabulatedFunction object.  That function can then appear in the expression.
@@ -127,54 +149,38 @@ public:
     /**
      * Get the number of groups used to define each bond.
      */
-    int getNumGroupsPerBond() const {
-        return groupsPerBond;
-    }
+    int getNumGroupsPerBond() const;
     /**
      * Get the number of particle groups that have been defined.
      */
-    int getNumGroups() const {
-        return groups.size();
-    }
+    int getNumGroups() const;
     /**
      * Get the number of bonds for which force field parameters have been defined.
      */
-    int getNumBonds() const {
-        return bonds.size();
-    }
+    int getNumBonds() const;
     /**
      * Get the number of per-bond parameters that the interaction depends on.
      */
-    int getNumPerBondParameters() const {
-        return bondParameters.size();
-    }
+    int getNumPerBondParameters() const;
     /**
      * Get the number of global parameters that the interaction depends on.
      */
-    int getNumGlobalParameters() const {
-        return globalParameters.size();
-    }
+    int getNumGlobalParameters() const;
     /**
      * Get the number of global parameters with respect to which the derivative of the energy
      * should be computed.
      */
-    int getNumEnergyParameterDerivatives() const {
-        return energyParameterDerivatives.size();
-    }
+    int getNumEnergyParameterDerivatives() const;
     /**
      * Get the number of tabulated functions that have been defined.
      */
-    int getNumTabulatedFunctions() const {
-        return functions.size();
-    }
+    int getNumTabulatedFunctions() const;
     /**
      * Get the number of tabulated functions that have been defined.
      *
      * @deprecated This method exists only for backward compatibility.  Use getNumTabulatedFunctions() instead.
      */
-    int getNumFunctions() const {
-        return functions.size();
-    }
+    int getNumFunctions() const;
     /**
      * Get the algebraic expression that gives the interaction energy of each bond
      */
@@ -341,15 +347,16 @@ public:
      */
     const std::string& getTabulatedFunctionName(int index) const;
     /**
-     * Update the per-bond parameters in a Context to match those stored in this Force object.  This method provides
+     * Update the per-bond parameters and tabulated functions in a Context to match those stored in this Force object.  This method provides
      * an efficient method to update certain parameters in an existing Context without needing to reinitialize it.
      * Simply call setBondParameters() to modify this object's parameters, then call updateParametersInContext()
      * to copy them over to the Context.
      *
-     * This method has several limitations.  The only information it updates is the values of per-bond parameters.
-     * All other aspects of the Force (such as the energy function) are unaffected and can only be changed by reinitializing
+     * This method has several limitations.  The only information it updates is the values of per-bond parameters and tabulated
+     * functions.  All other aspects of the Force (such as the energy function) are unaffected and can only be changed by reinitializing
      * the Context.  Neither the definitions of groups nor the set of groups involved in a bond can be changed, nor can new
-     * bonds be added.
+     * bonds be added.  Also, while the tabulated values of a function can change, everything else about it (its dimensions,
+     * the data range) must not be changed.
      */
     void updateParametersInContext(Context& context);
     /**

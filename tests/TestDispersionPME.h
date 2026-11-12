@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2008-2017 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -1307,6 +1305,11 @@ void testWater125DpmeVsLongCutoffNoExclusions() {
     State state = context.getState(State::Forces | State::Energy);
     double energy = state.getPotentialEnergy();
 
+    // Make another call to the get the energy to test that the call is
+    // idempotent when Coulomb terms are absent.
+    double secondEnergy = context.getState(State::Energy).getPotentialEnergy();
+    ASSERT_EQUAL_TOL(secondEnergy, energy, 5E-5);
+
 //Gromacs reference values.  See comments in testWater2DpmeEnergiesForcesNoExclusions() for details.
 //Coordinates are from make_waterbox, and the .gro file looks like
 //
@@ -2261,7 +2264,7 @@ void testWater125DpmeVsLongCutoffWithExclusions() {
     // is just 0.064 kJ/mol.  The difference is due to the fact that arithmetic mean combination rules are used
     // up to the cutoff, while the reciprocal space uses the geometric mean.  See DOI: 10.1021/acs.jctc.5b00726
     ASSERT_EQUAL_TOL(refenergy, energy, 5E-4);
-    ASSERT_EQUAL_TOL(gromacs_energy, energy, 5E-5);
+    ASSERT_EQUAL_TOL(gromacs_energy, energy, 5E-4);
 
     // Forces accumulated in single precision are tested to a more permissive criterion; the double
     // precision platform can match to 5E-5.

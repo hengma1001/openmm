@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2014 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -41,7 +39,7 @@ Continuous1DFunctionProxy::Continuous1DFunctionProxy() : SerializationProxy("Con
 }
 
 void Continuous1DFunctionProxy::serialize(const void* object, SerializationNode& node) const {
-    node.setIntProperty("version", 1);
+    node.setIntProperty("version", 2);
     const Continuous1DFunction& function = *reinterpret_cast<const Continuous1DFunction*>(object);
     double min, max;
     vector<double> values;
@@ -51,23 +49,26 @@ void Continuous1DFunctionProxy::serialize(const void* object, SerializationNode&
     SerializationNode& valuesNode = node.createChildNode("Values");
     for (auto v : values)
         valuesNode.createChildNode("Value").setDoubleProperty("v", v);
+    node.setBoolProperty("periodic", function.getPeriodic());
 }
 
 void* Continuous1DFunctionProxy::deserialize(const SerializationNode& node) const {
-    if (node.getIntProperty("version") != 1)
+    int version = node.getIntProperty("version");
+    if (!(version == 1 || version == 2))
         throw OpenMMException("Unsupported version number");
     const SerializationNode& valuesNode = node.getChildNode("Values");
     vector<double> values;
     for (auto& child : valuesNode.getChildren())
         values.push_back(child.getDoubleProperty("v"));
-    return new Continuous1DFunction(values, node.getDoubleProperty("min"), node.getDoubleProperty("max"));
+    bool periodic = version == 1 ? false : node.getBoolProperty("periodic");
+    return new Continuous1DFunction(values, node.getDoubleProperty("min"), node.getDoubleProperty("max"), periodic);
 }
 
 Continuous2DFunctionProxy::Continuous2DFunctionProxy() : SerializationProxy("Continuous2DFunction") {
 }
 
 void Continuous2DFunctionProxy::serialize(const void* object, SerializationNode& node) const {
-    node.setIntProperty("version", 1);
+    node.setIntProperty("version", 2);
     const Continuous2DFunction& function = *reinterpret_cast<const Continuous2DFunction*>(object);
     int xsize, ysize;
     double xmin, xmax, ymin, ymax;
@@ -82,24 +83,28 @@ void Continuous2DFunctionProxy::serialize(const void* object, SerializationNode&
     SerializationNode& valuesNode = node.createChildNode("Values");
     for (auto v : values)
         valuesNode.createChildNode("Value").setDoubleProperty("v", v);
+    node.setBoolProperty("periodic", function.getPeriodic());
 }
 
 void* Continuous2DFunctionProxy::deserialize(const SerializationNode& node) const {
-    if (node.getIntProperty("version") != 1)
+    int version = node.getIntProperty("version");
+    if (!(version == 1 || version == 2))
         throw OpenMMException("Unsupported version number");
     const SerializationNode& valuesNode = node.getChildNode("Values");
     vector<double> values;
     for (auto& child : valuesNode.getChildren())
         values.push_back(child.getDoubleProperty("v"));
+    bool periodic = version == 1 ? false : node.getBoolProperty("periodic");
     return new Continuous2DFunction(node.getIntProperty("xsize"), node.getIntProperty("ysize"), values,
-            node.getDoubleProperty("xmin"), node.getDoubleProperty("xmax"), node.getDoubleProperty("ymin"), node.getDoubleProperty("ymax"));
+            node.getDoubleProperty("xmin"), node.getDoubleProperty("xmax"),
+            node.getDoubleProperty("ymin"),node.getDoubleProperty("ymax"), periodic);
 }
 
 Continuous3DFunctionProxy::Continuous3DFunctionProxy() : SerializationProxy("Continuous3DFunction") {
 }
 
 void Continuous3DFunctionProxy::serialize(const void* object, SerializationNode& node) const {
-    node.setIntProperty("version", 1);
+    node.setIntProperty("version", 2);
     const Continuous3DFunction& function = *reinterpret_cast<const Continuous3DFunction*>(object);
     int xsize, ysize, zsize;
     double xmin, xmax, ymin, ymax, zmin, zmax;
@@ -117,18 +122,21 @@ void Continuous3DFunctionProxy::serialize(const void* object, SerializationNode&
     SerializationNode& valuesNode = node.createChildNode("Values");
     for (auto v : values)
         valuesNode.createChildNode("Value").setDoubleProperty("v", v);
+    node.setBoolProperty("periodic", function.getPeriodic());
 }
 
 void* Continuous3DFunctionProxy::deserialize(const SerializationNode& node) const {
-    if (node.getIntProperty("version") != 1)
+    int version = node.getIntProperty("version");
+    if (!(version == 1 || version == 2))
         throw OpenMMException("Unsupported version number");
     const SerializationNode& valuesNode = node.getChildNode("Values");
     vector<double> values;
     for (auto& child : valuesNode.getChildren())
         values.push_back(child.getDoubleProperty("v"));
+    bool periodic = version == 1 ? false : node.getBoolProperty("periodic");
     return new Continuous3DFunction(node.getIntProperty("xsize"), node.getIntProperty("ysize"), node.getIntProperty("zsize"), values,
             node.getDoubleProperty("xmin"), node.getDoubleProperty("xmax"), node.getDoubleProperty("ymin"), node.getDoubleProperty("ymax"),
-            node.getDoubleProperty("zmin"), node.getDoubleProperty("zmax"));
+            node.getDoubleProperty("zmin"), node.getDoubleProperty("zmax"), periodic);
 }
 
 Discrete1DFunctionProxy::Discrete1DFunctionProxy() : SerializationProxy("Discrete1DFunction") {

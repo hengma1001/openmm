@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   Lepton                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the Lepton expression parser originating from              *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the Lepton expression parser.                              *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2019 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -63,7 +61,7 @@ public:
      * can be used when processing or analyzing parsed expressions.
      */
     enum Id {CONSTANT, VARIABLE, CUSTOM, ADD, SUBTRACT, MULTIPLY, DIVIDE, POWER, NEGATE, SQRT, EXP, LOG,
-             SIN, COS, SEC, CSC, TAN, COT, ASIN, ACOS, ATAN, SINH, COSH, TANH, ERF, ERFC, STEP, DELTA, SQUARE, CUBE, RECIPROCAL,
+             SIN, COS, SEC, CSC, TAN, COT, ASIN, ACOS, ATAN, ATAN2, SINH, COSH, TANH, ERF, ERFC, STEP, DELTA, SQUARE, CUBE, RECIPROCAL,
              ADD_CONSTANT, MULTIPLY_CONSTANT, POWER_CONSTANT, MIN, MAX, ABS, FLOOR, CEIL, SELECT};
     /**
      * Get the name of this Operation.
@@ -137,6 +135,7 @@ public:
     class Asin;
     class Acos;
     class Atan;
+    class Atan2;
     class Sinh;
     class Cosh;
     class Tanh;
@@ -685,6 +684,28 @@ public:
     }
     double evaluate(double* args, const std::map<std::string, double>& variables) const {
         return std::atan(args[0]);
+    }
+    ExpressionTreeNode differentiate(const std::vector<ExpressionTreeNode>& children, const std::vector<ExpressionTreeNode>& childDerivs, const std::string& variable) const;
+};
+
+class LEPTON_EXPORT Operation::Atan2 : public Operation {
+public:
+    Atan2() {
+    }
+    std::string getName() const {
+        return "atan2";
+    }
+    Id getId() const {
+        return ATAN2;
+    }
+    int getNumArguments() const {
+        return 2;
+    }
+    Operation* clone() const {
+        return new Atan2();
+    }
+    double evaluate(double* args, const std::map<std::string, double>& variables) const {
+        return std::atan2(args[0], args[1]);
     }
     ExpressionTreeNode differentiate(const std::vector<ExpressionTreeNode>& children, const std::vector<ExpressionTreeNode>& childDerivs, const std::string& variable) const;
 };

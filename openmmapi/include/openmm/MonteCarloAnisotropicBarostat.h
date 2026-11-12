@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2026 Stanford University and the Authors.      *
  * Authors: Peter Eastman, Lee-Ping Wang                                      *
  * Contributors:                                                              *
  *                                                                            *
@@ -98,8 +96,10 @@ public:
      * @param scaleY              whether to allow the Y dimension of the periodic box to change size
      * @param scaleZ              whether to allow the Z dimension of the periodic box to change size
      * @param frequency           the frequency at which Monte Carlo pressure changes should be attempted (in time steps)
+     * @param scaleMoleculesAsRigid   if true, coordinate scaling keeps molecules rigid, scaling only the center of mass
+     *                                of each one.  If false, every atom is scaled independently.
      */
-    MonteCarloAnisotropicBarostat(const Vec3& defaultPressure, double defaultTemperature, bool scaleX = true, bool scaleY = true, bool scaleZ = true, int frequency = 25);
+    MonteCarloAnisotropicBarostat(const Vec3& defaultPressure, double defaultTemperature, bool scaleX = true, bool scaleY = true, bool scaleZ = true, int frequency = 25, bool scaleMoleculesAsRigid = true);
     /**
      * Get the default pressure (in bar).
      *
@@ -114,9 +114,7 @@ public:
      *
      * @param pressure   the default pressure acting on the system, measured in bar.
      */
-    void setDefaultPressure(const Vec3& pressure) {
-        defaultPressure = pressure;
-    }
+    void setDefaultPressure(const Vec3& pressure);
     /**
      * Get whether to allow the X dimension of the periodic box to change size.
      */
@@ -146,9 +144,7 @@ public:
      * Set the frequency (in time steps) at which Monte Carlo pressure changes should be attempted.  If this is set to
      * 0, the barostat is disabled.
      */
-    void setFrequency(int freq) {
-        frequency = freq;
-    }
+    void setFrequency(int freq);
     /**
      * Get the default temperature at which the system is being maintained, measured in Kelvin.
      */
@@ -161,9 +157,7 @@ public:
      *
      * @param temp     the system temperature, measured in Kelvin.
      */
-    void setDefaultTemperature(double temp) {
-        defaultTemperature = temp;
-    }
+    void setDefaultTemperature(double temp);
     /**
      * Get the random number seed.  See setRandomNumberSeed() for details.
      */
@@ -193,9 +187,42 @@ public:
     bool usesPeriodicBoundaryConditions() const {
         return false;
     }
+    /**
+     * Get whether scaling is applied to the centroid of each molecule while keeping
+     * the molecules rigid, or to each atom independently.
+     *
+     * @returns true if scaling is applied to molecule centroids, false if it is applied to each atom independently.
+     */
+    bool getScaleMoleculesAsRigid() const {
+        return scaleMoleculesAsRigid;
+    }
+    /**
+     * Set whether scaling is applied to the centroid of each molecule while keeping
+     * the molecules rigid, or to each atom independently.
+     */
+    void setScaleMoleculesAsRigid(bool rigid) {
+        scaleMoleculesAsRigid = rigid;
+    }
+    /**
+     * Compute the instantaneous pressure along each axis of a system to which this barostat
+     * is applied.
+     * 
+     * The pressure is computed from the molecular virial if getScaleMoleculesAsRigid()
+     * is true, or the atomic virial if it is false.  It uses a finite difference to
+     * calculate the derivative of potential energy with respect to volume.  For most systems
+     * in equilibrium, the time average of the instantaneous pressure should equal the
+     * pressure applied by the barostat.  Fluctuations around the average value can be
+     * extremely large, however, and it may take a very long simulation to accurately
+     * compute the average.
+     *
+     * @param context    the Context for which to compute the current pressure
+     * @returns a vector containing the pressure along each axis
+     */
+    Vec3 computeCurrentPressure(Context& context) const;
 protected:
     ForceImpl* createImpl() const;
 private:
+    bool scaleMoleculesAsRigid;
     Vec3 defaultPressure;
     double defaultTemperature;
     bool scaleX, scaleY, scaleZ;

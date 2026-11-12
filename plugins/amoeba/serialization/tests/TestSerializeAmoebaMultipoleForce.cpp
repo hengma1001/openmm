@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMAmoeba                                *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -60,6 +58,7 @@ void testSerialization() {
 
     AmoebaMultipoleForce force1;
     force1.setForceGroup(3);
+    force1.setName("custom name");
     force1.setNonbondedMethod(AmoebaMultipoleForce::NoCutoff);
     force1.setCutoffDistance(0.9);
     force1.setAEwald(0.544);
@@ -70,10 +69,8 @@ void testSerialization() {
     gridDimension.push_back(63);
     gridDimension.push_back(61);
     force1.setPmeGridDimensions(gridDimension); 
-    //force1.setMutualInducedIterationMethod(AmoebaMultipoleForce::SOR); 
     force1.setMutualInducedMaxIterations(200); 
     force1.setMutualInducedTargetEpsilon(1.0e-05); 
-    //force1.setElectricConstant(138.93); 
     force1.setEwaldErrorTolerance(1.0e-05); 
     
     vector<double> coeff;
@@ -113,6 +110,7 @@ void testSerialization() {
     AmoebaMultipoleForce& force2 = *copy;
 
     ASSERT_EQUAL(force1.getForceGroup(), force2.getForceGroup());
+    ASSERT_EQUAL(force1.getName(), force2.getName());
     ASSERT_EQUAL(force1.getCutoffDistance(),                force2.getCutoffDistance());
     ASSERT_EQUAL(force1.getNonbondedMethod(),               force2.getNonbondedMethod());
     ASSERT_EQUAL(force1.getAEwald(),                        force2.getAEwald());

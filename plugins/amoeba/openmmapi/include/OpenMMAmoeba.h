@@ -4,10 +4,8 @@
 /* -------------------------------------------------------------------------- *
  *                               OpenMMAmoeba                                 *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2009 Stanford University and the Authors.           *
  * Authors:                                                                   *
@@ -32,16 +30,11 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.                                     *
  * -------------------------------------------------------------------------- */
 
-#include "openmm/AmoebaBondForce.h"
-#include "openmm/AmoebaAngleForce.h"
-#include "openmm/AmoebaInPlaneAngleForce.h"
-#include "openmm/AmoebaPiTorsionForce.h"
-#include "openmm/AmoebaStretchBendForce.h"
-#include "openmm/AmoebaOutOfPlaneBendForce.h"
 #include "openmm/AmoebaTorsionTorsionForce.h"
 #include "openmm/AmoebaMultipoleForce.h"
 #include "openmm/AmoebaGeneralizedKirkwoodForce.h"
 #include "openmm/AmoebaVdwForce.h"
 #include "openmm/AmoebaWcaDispersionForce.h"
+#include "openmm/HippoNonbondedForce.h"
 
 #endif /*AMOEBA_OPENMM_H_*/

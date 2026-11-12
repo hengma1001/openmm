@@ -1,13 +1,11 @@
-import sys
+import tempfile
 import unittest
-from simtk.openmm.app import *
-from simtk.openmm import *
-from simtk.unit import *
-import simtk.openmm.app.element as elem
-if sys.version_info >= (3, 0):
-    from io import StringIO
-else:
-    from cStringIO import StringIO
+import numpy as np
+from openmm.app import *
+from openmm import *
+from openmm.unit import *
+import openmm.app.element as elem
+from io import StringIO
 
 
 class TestPdbFile(unittest.TestCase):
@@ -47,50 +45,164 @@ class TestPdbFile(unittest.TestCase):
 
     def test_WriteFile(self):
         """Write a file, read it back, and make sure it matches the original."""
+        def compareFiles(pdb1, pdb2):
+            self.assertEqual(len(pdb2.positions), 8)
+            for (p1, p2) in zip(pdb1.positions, pdb2.positions):
+                self.assertVecAlmostEqual(p1, p2)
+            for (v1, v2) in zip(pdb1.topology.getPeriodicBoxVectors(), pdb2.topology.getPeriodicBoxVectors()):
+                self.assertVecAlmostEqual(v1, v2, 1e-4)
+            self.assertVecAlmostEqual(pdb1.topology.getUnitCellDimensions(), pdb2.topology.getUnitCellDimensions(), 1e-4)
+            for atom1, atom2 in zip(pdb1.topology.atoms(), pdb2.topology.atoms()):
+                self.assertEqual(atom1.element, atom2.element)
+                self.assertEqual(atom1.name, atom2.name)
+                self.assertEqual(atom1.residue.name, atom2.residue.name)
+
         pdb1 = PDBFile('systems/triclinic.pdb')
+
+        # First try writing to an open file object.
+
         output = StringIO()
         PDBFile.writeFile(pdb1.topology, pdb1.positions, output)
         input = StringIO(output.getvalue())
         pdb2 = PDBFile(input)
-        output.close();
-        input.close();
-        self.assertEqual(len(pdb2.positions), 8)
-        for (p1, p2) in zip(pdb1.positions, pdb2.positions):
-            self.assertVecAlmostEqual(p1, p2)
-        for (v1, v2) in zip(pdb1.topology.getPeriodicBoxVectors(), pdb2.topology.getPeriodicBoxVectors()):
-            self.assertVecAlmostEqual(v1, v2, 1e-4)
-        self.assertVecAlmostEqual(pdb1.topology.getUnitCellDimensions(), pdb2.topology.getUnitCellDimensions(), 1e-4)
-        for atom1, atom2 in zip(pdb1.topology.atoms(), pdb2.topology.atoms()):
-            self.assertEqual(atom1.element, atom2.element)
-            self.assertEqual(atom1.name, atom2.name)
-            self.assertEqual(atom1.residue.name, atom2.residue.name)
+        output.close()
+        input.close()
+        compareFiles(pdb1, pdb2)
+
+        # Now try a filename.
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            filename = os.path.join(tempdir, 'temp.pdb')
+            PDBFile.writeFile(pdb1.topology, pdb1.positions, filename)
+            pdb2 = PDBFile(filename)
+            compareFiles(pdb1, pdb2)
+
+    def test_BoxVectorsArrayOfQuantities(self):
+        """Periodic box vectors given as a nested array of Quantities must be
+           normalized so writeFile produces a correct CRYST1 record."""
+        topology = Topology()
+        chain = topology.addChain()
+        residue = topology.addResidue("He", chain)
+        topology.addAtom("He", elem.helium, residue)
+        d = 7.0*nanometer
+        vectors = np.array([
+            [d, 0*nanometer, 0*nanometer],
+            [0*nanometer, d, 0*nanometer],
+            [d/2, d/2, d/np.sqrt(2)]
+        ])
+        topology.setPeriodicBoxVectors(vectors)
+        output = StringIO()
+        PDBFile.writeFile(topology, [[0, 0, 0]]*nanometer, output)
+        cryst1 = [l for l in output.getvalue().splitlines() if l.startswith("CRYST1")][0]
+        for actual, expected in zip([float(x) for x in cryst1[6:33].split()], [70.0, 70.0, 70.0]):
+            self.assertAlmostEqual(actual, expected, places=4)
 
     def test_BinaryStream(self):
         """Test reading a stream that was opened in binary mode."""
-        pdb = PDBFile(open('systems/triclinic.pdb', 'rb'))
+        with open('systems/triclinic.pdb', 'rb') as infile:
+            pdb = PDBFile(infile)
         self.assertEqual(len(pdb.positions), 8)
 
     def test_ExtraParticles(self):
         """Test reading, and writing and re-reading of a file containing extra particle atoms."""
-        pdb = PDBFile('systems/tip5p.pdb')  
+        pdb = PDBFile('systems/tip5p.pdb')
         for atom in pdb.topology.atoms():
             if atom.index > 2:
                 self.assertEqual(None, atom.element)
         output = StringIO()
         PDBFile.writeFile(pdb.topology, pdb.positions, output)
         input = StringIO(output.getvalue())
-        pdb = PDBFile(input, extraParticleIdentifier = '')
+        pdb = PDBFile(input)
         for atom in pdb.topology.atoms():
             if atom.index > 2:
                 self.assertEqual(None, atom.element)
 
     def test_AltLocs(self):
         """Test reading a file that includes AltLocs"""
-        pdb = PDBFile('systems/altlocs.pdb')
-        self.assertEqual(1, pdb.topology.getNumResidues())
-        self.assertEqual(19, pdb.topology.getNumAtoms())
-        self.assertEqual(19, len(pdb.positions))
-        self.assertEqual('ILE', list(pdb.topology.residues())[0].name)
+        for filename in ['altlocs.pdb', 'altlocs2.pdb']:
+            pdb = PDBFile(f'systems/{filename}')
+            self.assertEqual(1, pdb.topology.getNumResidues())
+            self.assertEqual(19, pdb.topology.getNumAtoms())
+            self.assertEqual(19, len(pdb.positions))
+            self.assertEqual('ILE', list(pdb.topology.residues())[0].name)
+
+    def test_InsertionCodes(self):
+        """Test that a missing insertion code is read as an empty string."""
+        line = 'ATOM  %5d  CA  ALA A%4d%1s   %8.3f%8.3f%8.3f  1.00  0.00           C'
+        residues = [(60, ' '), (60, 'A'), (61, ' ')]
+        text = '\n'.join(line % (i+1, id, code, i, 0, 0) for i, (id, code) in enumerate(residues))
+        pdb = PDBFile(StringIO(text))
+        self.assertEqual(['60', '60', '61'], [res.id for res in pdb.topology.residues()])
+        self.assertEqual(['', 'A', ''], [res.insertionCode for res in pdb.topology.residues()])
+
+        # The codes should survive being written and read back.
+
+        output = StringIO()
+        PDBFile.writeFile(pdb.topology, pdb.positions, output, keepIds=True)
+        pdb2 = PDBFile(StringIO(output.getvalue()))
+        self.assertEqual(['60', '60', '61'], [res.id for res in pdb2.topology.residues()])
+        self.assertEqual(['', 'A', ''], [res.insertionCode for res in pdb2.topology.residues()])
+
+    def test_FormalCharges(self):
+        """Test reading, and writing and re-reading of a file containing formal charges."""
+        pdb = PDBFile('systems/formal-charges.pdb')
+        for atom in pdb.topology.atoms():
+            if atom.index == 8:
+                self.assertEqual(+1, atom.formalCharge)
+            elif atom.index == 29:
+                self.assertEqual(-1, atom.formalCharge)
+            else:
+                self.assertEqual(None, atom.formalCharge)
+        output = StringIO()
+        PDBFile.writeFile(pdb.topology, pdb.positions, output)
+        input = StringIO(output.getvalue())
+        pdb = PDBFile(input)
+        for atom in pdb.topology.atoms():
+            if atom.index == 8:
+                self.assertEqual(+1, atom.formalCharge)
+            elif atom.index == 29:
+                self.assertEqual(-1, atom.formalCharge)
+            else:
+                self.assertEqual(None, atom.formalCharge)
+
+    def test_LargeFile(self):
+        """Write and read a file with more than 100,000 atoms"""
+        topology = Topology()
+        chain = topology.addChain('A')
+        for i in range(20000):
+            res = topology.addResidue('MOL', chain)
+            atoms = []
+            for j in range(6):
+                atoms.append(topology.addAtom(f'AT{j}', elem.carbon, res))
+            for j in range(5):
+                topology.addBond(atoms[j], atoms[j+1])
+        positions = [Vec3(0, 0, 0)]*topology.getNumAtoms()
+
+        # The model has 20,000 residues and 120,000 atoms.
+
+        output = StringIO()
+        PDBFile.writeFile(topology, positions, output)
+        input = StringIO(output.getvalue())
+        pdb = PDBFile(input)
+        output.close()
+        input.close()
+        self.assertEqual(len(positions), len(pdb.positions))
+        self.assertEqual(topology.getNumAtoms(), pdb.topology.getNumAtoms())
+        self.assertEqual(topology.getNumResidues(), pdb.topology.getNumResidues())
+        self.assertEqual(topology.getNumChains(), pdb.topology.getNumChains())
+        self.assertEqual(topology.getNumBonds(), pdb.topology.getNumBonds())
+        for atom in pdb.topology.atoms():
+            self.assertEqual(str(atom.index+1), atom.id)
+        for res in pdb.topology.residues():
+            self.assertEqual(str(res.index+1), res.id)
+
+        # Make sure the CONECT records were interpreted correctly.
+
+        bonds = set()
+        for atom1, atom2 in topology.bonds():
+            bonds.add(tuple(sorted((atom1.index, atom2.index))))
+        for atom1, atom2 in pdb.topology.bonds():
+            assert tuple(sorted((atom1.index, atom2.index))) in bonds
 
     def assertVecAlmostEqual(self, p1, p2, tol=1e-7):
         unit = p1.unit

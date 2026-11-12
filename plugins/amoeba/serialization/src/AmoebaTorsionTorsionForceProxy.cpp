@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                                OpenMMAmoeba                                *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
@@ -66,6 +64,7 @@ void AmoebaTorsionTorsionForceProxy::serialize(const void* object, Serialization
     node.setIntProperty("version", 3);
     const AmoebaTorsionTorsionForce& force = *reinterpret_cast<const AmoebaTorsionTorsionForce*>(object);
     node.setIntProperty("forceGroup", force.getForceGroup());
+    node.setStringProperty("name", force.getName());
     node.setBoolProperty("usesPeriodic", force.usesPeriodicBoundaryConditions());
 
     // grid[xIdx][yIdx][6 values]
@@ -83,7 +82,6 @@ void AmoebaTorsionTorsionForceProxy::serialize(const void* object, Serialization
         const std::vector< std::vector< std::vector<double> > > grid = force.getTorsionTorsionGrid(kk);
 
         unsigned int gridCount = 0;
-        unsigned int gridYsize =  grid[0].size();
         for (unsigned int ii = 0; ii < grid.size(); ii++) {
             gridCount += grid[ii].size();
         }
@@ -124,8 +122,8 @@ void* AmoebaTorsionTorsionForceProxy::deserialize(const SerializationNode& node)
 
     AmoebaTorsionTorsionForce* force = new AmoebaTorsionTorsionForce();
     try {
-        if (version > 1)
-            force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setForceGroup(node.getIntProperty("forceGroup", 0));
+        force->setName(node.getStringProperty("name", force->getName()));
         if (version > 2)
             force->setUsesPeriodicBoundaryConditions(node.getBoolProperty("usesPeriodic"));
         const SerializationNode& grids                    = node.getChildNode("TorsionTorsionGrids");

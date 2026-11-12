@@ -4,12 +4,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2008-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2021 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -39,7 +37,7 @@
 namespace OpenMM {
 
 /**
- * This is an error contolled, variable time step Integrator that simulates a System using Langevin
+ * This is an error controlled, variable time step Integrator that simulates a System using Langevin
  * dynamics.  It compares the result of the Langevin integrator to that of an
  * explicit Euler integrator, takes the difference between the two as a measure of the integration
  * error in each time step, and continuously adjusts the step size to keep the error below a
@@ -50,6 +48,10 @@ namespace OpenMM {
  * adjustable parameter that affects the step size and integration accuracy.  You
  * should try different values to find the largest one that produces a trajectory sufficiently
  * accurate for your purposes.  0.001 is often a good starting point.
+ * 
+ * You can optionally set a maximum step size it will ever use.  This is useful to prevent it
+ * from taking excessively large steps in usual situations, such as when the system is right at
+ * a local energy minimum.
  */
 
 class OPENMM_EXPORT VariableLangevinIntegrator : public Integrator {
@@ -75,9 +77,7 @@ public:
      *
      * @param temp    the temperature of the heat bath, measured in Kelvin
      */
-    void setTemperature(double temp) {
-        temperature = temp;
-    }
+    void setTemperature(double temp);
     /**
      * Get the friction coefficient which determines how strongly the system is coupled to
      * the heat bath (in inverse ps).
@@ -93,9 +93,7 @@ public:
      *
      * @param coeff    the friction coefficient, measured in 1/ps
      */
-    void setFriction(double coeff) {
-        friction = coeff;
-    }
+    void setFriction(double coeff);
     /**
      * Get the error tolerance.
      */
@@ -105,9 +103,19 @@ public:
     /**
      * Set the error tolerance.
      */
-    void setErrorTolerance(double tol) {
-        errorTol = tol;
+    void setErrorTolerance(double tol);
+    /**
+     * Get the maximum step size the integrator will ever use, in ps.  If this
+     * is 0 (the default), no limit will be applied to step sizes.
+     */
+    double getMaximumStepSize() const {
+        return maxStepSize;
     }
+    /**
+     * Set the maximum step size the integrator will ever use, in ps.  If this
+     * is 0 (the default), no limit will be applied to step sizes.
+     */
+    void setMaximumStepSize(double size);
     /**
      * Get the random number seed.  See setRandomNumberSeed() for details.
      */
@@ -165,7 +173,7 @@ protected:
      */
     double computeKineticEnergy();
 private:
-    double temperature, friction, errorTol;
+    double temperature, friction, errorTol, maxStepSize;
     int randomNumberSeed;
     Kernel kernel;
 };

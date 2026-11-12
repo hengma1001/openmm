@@ -1,12 +1,10 @@
 /* -------------------------------------------------------------------------- *
  *                                   OpenMM                                   *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
- * Portions copyright (c) 2010 Stanford University and the Authors.           *
+ * Portions copyright (c) 2010-2024 Stanford University and the Authors.      *
  * Authors: Peter Eastman, Yutong Zhao                                        *
  * Contributors:                                                              *
  *                                                                            *
@@ -36,22 +34,27 @@ using namespace std;
 using namespace OpenMM;
 
 VariableVerletIntegratorProxy::VariableVerletIntegratorProxy() : SerializationProxy("VariableVerletIntegrator") {
-
 }
 
 void VariableVerletIntegratorProxy::serialize(const void* object, SerializationNode& node) const {
-    node.setIntProperty("version", 1);
+    node.setIntProperty("version", 2);
     const VariableVerletIntegrator& integrator = *reinterpret_cast<const VariableVerletIntegrator*>(object);
     node.setDoubleProperty("errorTol", integrator.getErrorTolerance());
+    node.setDoubleProperty("maxStepSize", integrator.getMaximumStepSize());
     node.setDoubleProperty("stepSize", integrator.getStepSize());
     node.setDoubleProperty("constraintTolerance", integrator.getConstraintTolerance());
+    node.setIntProperty("integrationForceGroups", integrator.getIntegrationForceGroups());
 }
 
 void* VariableVerletIntegratorProxy::deserialize(const SerializationNode& node) const {
-    if (node.getIntProperty("version") != 1)
+    int version = node.getIntProperty("version");
+    if (version < 1 || version > 2)
         throw OpenMMException("Unsupported version number");
     VariableVerletIntegrator *integrator = new VariableVerletIntegrator(node.getDoubleProperty("errorTol"));
     integrator->setStepSize(node.getDoubleProperty("stepSize"));
     integrator->setConstraintTolerance(node.getDoubleProperty("constraintTolerance"));
+    integrator->setIntegrationForceGroups(node.getIntProperty("integrationForceGroups", 0xFFFFFFFF));
+    if (version > 1)
+        integrator->setMaximumStepSize(node.getDoubleProperty("maxStepSize"));
     return integrator;
 }

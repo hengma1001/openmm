@@ -1,10 +1,8 @@
 /* -------------------------------------------------------------------------- *
  *                              OpenMMCpuPme                                  *
  * -------------------------------------------------------------------------- *
- * This is part of the OpenMM molecular simulation toolkit originating from   *
- * Simbios, the NIH National Center for Physics-Based Simulation of           *
- * Biological Structures at Stanford, funded under the NIH Roadmap for        *
- * Medical Research, grant U54 GM072970. See https://simtk.org.               *
+ * This is part of the OpenMM molecular simulation toolkit.                   *
+ * See https://openmm.org/development.                                        *
  *                                                                            *
  * Portions copyright (c) 2013 Stanford University and the Authors.           *
  * Authors: Peter Eastman                                                     *
@@ -35,8 +33,10 @@ using namespace OpenMM;
 extern "C" OPENMM_EXPORT_PME void registerKernelFactories() {
     if (CpuCalcPmeReciprocalForceKernel::isProcessorSupported()) {
         CpuPmeKernelFactory* factory = new CpuPmeKernelFactory();
-        for (int i = 0; i < Platform::getNumPlatforms(); i++)
+        for (int i = 0; i < Platform::getNumPlatforms(); i++) {
             Platform::getPlatform(i).registerKernelFactory(CalcPmeReciprocalForceKernel::Name(), factory);
+            Platform::getPlatform(i).registerKernelFactory(CalcDispersionPmeReciprocalForceKernel::Name(), factory);
+        }
     }
 }
 
